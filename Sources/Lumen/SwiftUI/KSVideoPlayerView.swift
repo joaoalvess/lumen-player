@@ -12,6 +12,8 @@ import SwiftUI
 @MainActor
 public struct KSVideoPlayerView: View {
     private let subtitleDataSouce: SubtitleDataSouce?
+    private let closeAction: (() -> Void)?
+    private let usesEmbeddedTitle: Bool
     @State
     private var title: String
     @StateObject
@@ -19,17 +21,22 @@ public struct KSVideoPlayerView: View {
     @Environment(\.dismiss)
     private var dismiss
     @FocusState
-    private var focusableField: FocusableField? {
-        willSet {
-            isDropdownShow = newValue == .info
-        }
-    }
+    private var focusableField: FocusableField?
 
     public let options: KSOptions
     @State
-    private var isDropdownShow = false
-    @State
     private var showVideoSetting = false
+    @State
+    private var playbackError: Error?
+    #if os(tvOS)
+    private var tvMetadata = TVPlayerMetadata()
+    @State
+    private var tvOverlayMode = TVOverlayMode.transport
+    @State
+    private var tvSkipHint: TVSkipHint?
+    @State
+    private var tvIsInitialLoading = true
+    #endif
     @State
     public var url: URL {
         didSet {
@@ -39,15 +46,64 @@ public struct KSVideoPlayerView: View {
         }
     }
 
-    public init(url: URL, options: KSOptions, title: String? = nil) {
-        self.init(coordinator: KSVideoPlayer.Coordinator(), url: url, options: options, title: title, subtitleDataSouce: nil)
+    public init(url: URL, options: KSOptions, title: String? = nil, onClose: (() -> Void)? = nil) {
+        self.init(
+            coordinator: KSVideoPlayer.Coordinator(),
+            url: url,
+            options: options,
+            title: title,
+            subtitleDataSouce: nil,
+            onClose: onClose
+        )
     }
 
-    public init(coordinator: KSVideoPlayer.Coordinator, url: URL, options: KSOptions, title: String? = nil, subtitleDataSouce: SubtitleDataSouce? = nil) {
-        self.init(coordinator: coordinator, url: .init(wrappedValue: url), options: options, title: .init(wrappedValue: title ?? url.lastPathComponent), subtitleDataSouce: subtitleDataSouce)
+    public init(
+        coordinator: KSVideoPlayer.Coordinator,
+        url: URL,
+        options: KSOptions,
+        title: String? = nil,
+        subtitleDataSouce: SubtitleDataSouce? = nil,
+        onClose: (() -> Void)? = nil
+    ) {
+        self.init(
+            coordinator: coordinator,
+            url: .init(wrappedValue: url),
+            options: options,
+            title: .init(wrappedValue: title ?? url.lastPathComponent),
+            subtitleDataSouce: subtitleDataSouce,
+            onClose: onClose,
+            usesEmbeddedTitle: title == nil
+        )
     }
 
-    public init(coordinator: KSVideoPlayer.Coordinator, url: State<URL>, options: KSOptions, title: State<String>, subtitleDataSouce: SubtitleDataSouce?) {
+    public init(
+        coordinator: KSVideoPlayer.Coordinator,
+        url: State<URL>,
+        options: KSOptions,
+        title: State<String>,
+        subtitleDataSouce: SubtitleDataSouce?,
+        onClose: (() -> Void)? = nil
+    ) {
+        self.init(
+            coordinator: coordinator,
+            url: url,
+            options: options,
+            title: title,
+            subtitleDataSouce: subtitleDataSouce,
+            onClose: onClose,
+            usesEmbeddedTitle: false
+        )
+    }
+
+    private init(
+        coordinator: KSVideoPlayer.Coordinator,
+        url: State<URL>,
+        options: KSOptions,
+        title: State<String>,
+        subtitleDataSouce: SubtitleDataSouce?,
+        onClose: (() -> Void)?,
+        usesEmbeddedTitle: Bool
+    ) {
         _url = url
         _playerCoordinator = .init(wrappedValue: coordinator)
         _title = title
@@ -56,6 +112,8 @@ public struct KSVideoPlayerView: View {
         #endif
         self.options = options
         self.subtitleDataSouce = subtitleDataSouce
+        closeAction = onClose
+        self.usesEmbeddedTitle = usesEmbeddedTitle
     }
 
     public var body: some View {
@@ -69,16 +127,40 @@ public struct KSVideoPlayerView: View {
                     Spacer()
                 }
                 .padding()
+                #if os(tvOS)
+                .padding(.bottom, playerCoordinator.isMaskShow ? 200 : 0)
+                .animation(TVPlayerMotion.transition, value: playerCoordinator.isMaskShow)
+                #endif
                 controllerView(playerWidth: proxy.size.width)
                 #if os(tvOS)
                     .ignoresSafeArea()
                 #endif
-                #if os(tvOS)
-                if isDropdownShow {
-                    VideoSettingView(config: playerCoordinator, subtitleModel: playerCoordinator.subtitleModel, subtitleTitle: title)
-                        .focused($focusableField, equals: .info)
+            }
+            #if os(tvOS)
+            if tvIsInitialLoading, playbackError == nil {
+                ZStack {
+                    Color.black
+                    ProgressView()
                 }
+                .ignoresSafeArea()
+            }
+            #endif
+            if let playbackError {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.largeTitle)
+                    Text(playbackError.localizedDescription)
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+                #if os(tvOS)
+                .tvPlayerControlMaterial(in: RoundedRectangle(cornerRadius: 16))
+                #else
+                .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 16))
                 #endif
+                .padding()
+                .allowsHitTesting(false)
             }
         }
         .preferredColorScheme(.dark)
@@ -87,41 +169,70 @@ public struct KSVideoPlayerView: View {
         .toolbar(.hidden, for: .automatic)
         #if os(tvOS)
             .onPlayPauseCommand {
-                if playerCoordinator.state.isPlaying {
-                    playerCoordinator.playerLayer?.pause()
-                } else {
-                    playerCoordinator.playerLayer?.play()
-                }
+                togglePlaybackAndShowTransport()
             }
             .onExitCommand {
-                if playerCoordinator.isMaskShow {
+                if tvIsInitialLoading {
+                    close()
+                } else if tvOverlayMode != .transport {
+                    showTransportAndFocusTimeline()
+                } else if playerCoordinator.isMaskShow {
                     playerCoordinator.isMaskShow = false
+                    focusableField = .play
                 } else {
-                    switch focusableField {
-                    case .play:
-                        dismiss()
-                    default:
-                        focusableField = .play
-                    }
+                    close()
                 }
             }
         #endif
     }
 
+    private func close() {
+        if let closeAction {
+            closeAction()
+        } else {
+            dismiss()
+        }
+    }
+
     private var playView: some View {
         KSVideoPlayer(coordinator: playerCoordinator, url: url, options: options)
             .onStateChanged { playerLayer, state in
+                if state == .preparing {
+                    playbackError = nil
+                    #if os(tvOS)
+                    tvIsInitialLoading = true
+                    #endif
+                }
                 if state == .readyToPlay {
-                    if let movieTitle = playerLayer.player.dynamicInfo?.metadata["title"] {
+                    #if os(tvOS)
+                    tvIsInitialLoading = false
+                    #endif
+                    if usesEmbeddedTitle,
+                       let movieTitle = playerLayer.player.dynamicInfo?.metadata["title"] {
                         title = movieTitle
                     }
+                }
+            }
+            .onFinish { _, error in
+                #if os(tvOS)
+                tvIsInitialLoading = false
+                #endif
+                if let error {
+                    playbackError = error
                 }
             }
             .onBufferChanged { bufferedCount, consumeTime in
                 print("bufferedCount \(bufferedCount), consumeTime \(consumeTime)")
             }
         #if canImport(UIKit)
-            .onSwipe { _ in
+            .onSwipe { direction in
+                #if os(tvOS)
+                if direction == .down {
+                    playerCoordinator.mask(show: true, autoHide: false)
+                    focusableField = .pills
+                    return
+                }
+                #endif
                 playerCoordinator.isMaskShow = true
             }
         #endif
@@ -143,16 +254,27 @@ public struct KSVideoPlayerView: View {
         #if os(iOS) || os(xrOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
-        #if !os(iOS)
+        #if os(tvOS)
+            .focusable(!playerCoordinator.isMaskShow || tvIsInitialLoading)
+        .focused($focusableField, equals: .play)
+        #elseif !os(iOS)
             .focusable(!playerCoordinator.isMaskShow)
         .focused($focusableField, equals: .play)
         #endif
         #if !os(xrOS)
             .onKeyPressLeftArrow {
+            #if os(tvOS)
+            tvSkip(-KSOptions.tvSkipInterval)
+            #else
             playerCoordinator.skip(interval: -15)
+            #endif
         }
         .onKeyPressRightArrow {
+            #if os(tvOS)
+            tvSkip(KSOptions.tvSkipInterval)
+            #else
             playerCoordinator.skip(interval: 15)
+            #endif
         }
         .onKeyPressSapce {
             if playerCoordinator.state.isPlaying {
@@ -188,6 +310,10 @@ public struct KSVideoPlayerView: View {
                 break
             }
         }
+        #elseif os(tvOS)
+        .onTapGesture {
+                togglePlaybackAndShowTransport()
+            }
         #else
         .onTapGesture {
                 playerCoordinator.isMaskShow.toggle()
@@ -197,13 +323,14 @@ public struct KSVideoPlayerView: View {
             .onMoveCommand { direction in
             switch direction {
             case .left:
-                playerCoordinator.skip(interval: -15)
+                tvSkip(-KSOptions.tvSkipInterval)
             case .right:
-                playerCoordinator.skip(interval: 15)
+                tvSkip(KSOptions.tvSkipInterval)
             case .up:
-                playerCoordinator.mask(show: true, autoHide: false)
+                showTransportAndFocusTimeline(autoHide: false)
             case .down:
-                focusableField = .info
+                playerCoordinator.mask(show: true, autoHide: false)
+                focusableField = .pills
             @unknown default:
                 break
             }
@@ -223,7 +350,35 @@ public struct KSVideoPlayerView: View {
         #endif
     }
 
+    @ViewBuilder
     private func controllerView(playerWidth: Double) -> some View {
+        #if os(tvOS)
+        ZStack(alignment: .bottom) {
+            if playerCoordinator.isMaskShow, !tvIsInitialLoading {
+                TVControlsOverlayView(config: playerCoordinator,
+                                      subtitleModel: playerCoordinator.subtitleModel,
+                                      timemodel: playerCoordinator.timemodel,
+                                      title: title,
+                                      metadata: tvMetadata,
+                                      mode: $tvOverlayMode,
+                                      skipHint: $tvSkipHint,
+                                      focusableField: $focusableField,
+                                      onShowTransport: { showTransportAndFocusTimeline() })
+                    .transition(.opacity)
+                    .onAppear {
+                        if focusableField != .pills {
+                            focusableField = .timeline
+                        }
+                    }
+                    .onDisappear {
+                        tvOverlayMode = .transport
+                        focusableField = .play
+                    }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .animation(TVPlayerMotion.transition, value: playerCoordinator.isMaskShow)
+        #else
         VStack {
             VideoControllerView(config: playerCoordinator, subtitleModel: playerCoordinator.subtitleModel, title: $title, volumeSliderSize: playerWidth / 4)
             #if !os(xrOS)
@@ -249,24 +404,49 @@ public struct KSVideoPlayerView: View {
             }
             .buttonStyle(.plain)
         }
-        #elseif os(tvOS)
-        .padding(.horizontal, 80)
-        .padding(.bottom, 80)
-        .background(overlayGradient)
         #endif
         .focused($focusableField, equals: .controller)
         .opacity(playerCoordinator.isMaskShow ? 1 : 0)
         .padding()
+        #endif
     }
 
-    private let overlayGradient = LinearGradient(
-        stops: [
-            Gradient.Stop(color: .black.opacity(0), location: 0.22),
-            Gradient.Stop(color: .black.opacity(0.7), location: 1),
-        ],
-        startPoint: .top,
-        endPoint: .bottom
-    )
+    #if os(tvOS)
+    private func togglePlaybackAndShowTransport() {
+        let isPausing = playerCoordinator.state.isPlaying
+        if isPausing {
+            playerCoordinator.playerLayer?.pause()
+        } else {
+            playerCoordinator.playerLayer?.play()
+        }
+        showTransportAndFocusTimeline(autoHide: !isPausing)
+    }
+
+    private func showTransportAndFocusTimeline(autoHide: Bool = true) {
+        withAnimation(TVPlayerMotion.transition) {
+            tvOverlayMode = .transport
+        }
+        playerCoordinator.mask(show: true, autoHide: autoHide)
+        focusableField = .timeline
+        Task { @MainActor in
+            await Task.yield()
+            focusableField = .timeline
+        }
+    }
+
+    private func tvSkip(_ seconds: Int) {
+        playerCoordinator.skip(interval: seconds)
+        playerCoordinator.mask(show: true)
+        tvSkipHint = TVSkipHint(seconds: seconds)
+    }
+
+    public func tvPlayerMetadata(_ metadata: TVPlayerMetadata) -> KSVideoPlayerView {
+        var view = self
+        view.tvMetadata = metadata
+        return view
+    }
+    #endif
+
     private func ornamentView(playerWidth: Double) -> some View {
         VStack(alignment: .leading) {
             KSVideoPlayerViewBuilder.titleView(title: title, config: playerCoordinator)
@@ -297,8 +477,8 @@ public struct KSVideoPlayerView: View {
         }
     }
 
-    fileprivate enum FocusableField {
-        case play, controller, info
+    enum FocusableField {
+        case play, controller, timeline, pills, popover, panel
     }
 
     public func openURL(_ url: URL) {
@@ -371,7 +551,7 @@ struct VideoControllerView: View {
                     .lineLimit(2)
                     .layoutPriority(3)
                 ProgressView()
-                    .opacity(config.state == .buffering ? 1 : 0)
+                    .opacity(config.state == .buffering || config.state == .preparing ? 1 : 0)
                 Spacer()
                     .layoutPriority(2)
                 HStack {
@@ -399,7 +579,7 @@ struct VideoControllerView: View {
                     infoButton
                         .frame(width: 56)
                 }
-                .font(.caption)
+                .font(.title3)
             }
             #else
             HStack {
@@ -720,7 +900,7 @@ struct VideoSettingView: View {
 @available(iOS 16, tvOS 16, macOS 13, *)
 public struct DynamicInfoView: View {
     @ObservedObject
-    fileprivate var dynamicInfo: DynamicInfo
+    var dynamicInfo: DynamicInfo
     public var body: some View {
         LabeledContent("Display FPS", value: dynamicInfo.displayFPS, format: .number)
         LabeledContent("Audio Video sync", value: dynamicInfo.audioVideoSyncDiff, format: .number)
@@ -763,21 +943,3 @@ struct KSVideoPlayerView_Previews: PreviewProvider {
         KSVideoPlayerView(coordinator: KSVideoPlayer.Coordinator(), url: url, options: KSOptions())
     }
 }
-
-// struct AVContentView: View {
-//    var body: some View {
-//        StructAVPlayerView().frame(width: UIScene.main.bounds.width, height: 400, alignment: .center)
-//    }
-// }
-//
-// struct StructAVPlayerView: UIViewRepresentable {
-//    let playerVC = AVPlayerViewController()
-//    typealias UIViewType = UIView
-//    func makeUIView(context _: Context) -> UIView {
-//        playerVC.view
-//    }
-//
-//    func updateUIView(_: UIView, context _: Context) {
-//        playerVC.player = AVPlayer(url: URL(string: "https://bitmovin-a.akamaihd.net/content/dataset/multi-codec/hevc/stream_fmp4.m3u8")!)
-//    }
-// }

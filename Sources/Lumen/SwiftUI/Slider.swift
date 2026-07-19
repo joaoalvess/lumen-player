@@ -42,13 +42,6 @@ public struct TVOSSlide: UIViewRepresentable {
     }
 
     public func updateUIView(_ view: UIViewType, context _: Context) {
-        if isFocused {
-            if view.processView.tintColor == .white {
-                view.processView.tintColor = .red
-            }
-        } else {
-            view.processView.tintColor = .white
-        }
         // 要加这个才会触发进度条更新
         let process = (value.wrappedValue - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)
         if process != view.processView.progress {
@@ -58,14 +51,30 @@ public struct TVOSSlide: UIViewRepresentable {
 }
 
 public class TVSlide: UIControl {
-    fileprivate let processView = UIProgressView()
+    let processView = UIProgressView()
     private var beganValue = Float(0.0)
-    private let onEditingChanged: (Bool) -> Void
-    fileprivate var value: Binding<Float>
-    fileprivate let ranges: ClosedRange<Float>
+    private var lastPanX = CGFloat(0)
+    private var isEditingSession = false
+    var onEditingChanged: (Bool) -> Void
+    var onDownArrow: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var canFocus = true {
+        didSet {
+            if canFocus != oldValue {
+                setNeedsFocusUpdate()
+            }
+        }
+    }
+
+    var value: Binding<Float>
+    var ranges: ClosedRange<Float>
     private var moveDirection: UISwipeGestureRecognizer.Direction?
     private var pressTime = CACurrentMediaTime()
     private var delayItem: DispatchWorkItem?
+
+    override public var canBecomeFocused: Bool {
+        canFocus
+    }
 
     private lazy var timer: Timer = .scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
         guard let self, let moveDirection = self.moveDirection else {
@@ -109,17 +118,37 @@ public class TVSlide: UIControl {
         delayItem?.cancel()
         delayItem = nil
         switch presse.type {
-        case .leftArrow:
-            moveDirection = .left
-            pressTime = CACurrentMediaTime()
-            timer.fireDate = Date.distantPast
-        case .rightArrow:
-            moveDirection = .right
+        case .leftArrow, .rightArrow:
+            beginSessionIfNeeded()
+            moveDirection = presse.type == .leftArrow ? .left : .right
             pressTime = CACurrentMediaTime()
             timer.fireDate = Date.distantPast
         case .select:
-            timer.fireDate = Date.distantFuture
-            onEditingChanged(false)
+            if isEditingSession {
+                commitSession()
+            } else {
+                beginSessionIfNeeded()
+            }
+        case .playPause:
+            if isEditingSession {
+                commitSession()
+            } else {
+                super.pressesBegan(presses, with: event)
+            }
+        case .menu:
+            if isEditingSession {
+                cancelSession()
+            } else {
+                super.pressesBegan(presses, with: event)
+            }
+        case .downArrow:
+            if isEditingSession {
+                break
+            } else if let onDownArrow {
+                onDownArrow()
+            } else {
+                super.pressesBegan(presses, with: event)
+            }
         default: super.pressesBegan(presses, with: event)
         }
     }
@@ -129,12 +158,54 @@ public class TVSlide: UIControl {
         guard let presse = presses.first, presse.type == .leftArrow || presse.type == .rightArrow else {
             return
         }
-        delayItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.onEditingChanged(false)
+        scheduleAutoCommit()
+    }
+
+    private func beginSessionIfNeeded() {
+        guard !isEditingSession else {
+            return
         }
+        isEditingSession = true
+        onEditingChanged(true)
+    }
+
+    private func commitSession() {
+        guard isEditingSession else {
+            return
+        }
+        isEditingSession = false
+        timer.fireDate = Date.distantFuture
+        moveDirection = nil
+        delayItem?.cancel()
+        delayItem = nil
+        onEditingChanged(false)
+    }
+
+    private func cancelSession() {
+        guard isEditingSession else {
+            return
+        }
+        isEditingSession = false
+        timer.fireDate = Date.distantFuture
+        moveDirection = nil
+        delayItem?.cancel()
+        delayItem = nil
+        if let onCancel {
+            onCancel()
+        } else {
+            onEditingChanged(false)
+        }
+    }
+
+    private func scheduleAutoCommit() {
+        delayItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.commitSession()
+        }
+        delayItem = item
         DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 1.5,
-                                      execute: delayItem!)
+                                      execute: item)
     }
 
     @objc private func actionPanGesture(sender: UIPanGestureRecognizer) {
@@ -147,22 +218,22 @@ public class TVSlide: UIControl {
             delayItem?.cancel()
             delayItem = nil
             beganValue = value.wrappedValue
+            lastPanX = translation.x
+            beginSessionIfNeeded()
         case .changed:
-            let wrappedValue = beganValue + Float(translation.x) / Float(frame.size.width) * (ranges.upperBound - ranges.lowerBound) / 5
-            if wrappedValue <= ranges.upperBound, wrappedValue >= ranges.lowerBound {
-                value.wrappedValue = wrappedValue
-                onEditingChanged(true)
-            }
+            let deltaX = translation.x - lastPanX
+            lastPanX = translation.x
+            let range = ranges.upperBound - ranges.lowerBound
+            let speed = Float(min(2.5, max(0.15, abs(sender.velocity(in: self).x) / 1200)))
+            let width = Float(max(1, frame.size.width))
+            let wrappedValue = value.wrappedValue + Float(deltaX) / width * range * 0.35 * speed
+            value.wrappedValue = min(ranges.upperBound, max(ranges.lowerBound, wrappedValue))
+            onEditingChanged(true)
         case .ended:
-            delayItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.onEditingChanged(false)
-            }
-            DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 1.5,
-                                          execute: delayItem!)
+            scheduleAutoCommit()
         case .cancelled, .failed:
-//            value.wrappedValue = beganValue
-            break
+            value.wrappedValue = beganValue
+            cancelSession()
         @unknown default:
             break
         }
