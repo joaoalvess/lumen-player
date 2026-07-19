@@ -3,23 +3,23 @@ import Foundation
 import PackageDescription
 
 let package = Package(
-    name: "KSPlayer",
+    name: "Lumen",
     defaultLocalization: "en",
     platforms: [.macOS(.v10_15), .macCatalyst(.v14), .iOS(.v13), .tvOS(.v13),
                 .visionOS(.v1)],
     products: [
         // Products define the executables and libraries produced by a package, and make them visible to other packages.
         .library(
-            name: "KSPlayer",
+            name: "Lumen",
             // todo clang: warning: using sysroot for 'iPhoneSimulator' but targeting 'MacOSX' [-Wincompatible-sysroot]
 //            type: .dynamic,
-            targets: ["KSPlayer"]
+            targets: ["Lumen"]
         ),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         .target(
-            name: "KSPlayer",
+            name: "Lumen",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
 //                .product(name: "Libass", package: "FFmpegKit"),
@@ -36,7 +36,7 @@ let package = Package(
         ),
         .testTarget(
             name: "KSPlayerTests",
-            dependencies: ["KSPlayer"],
+            dependencies: ["Lumen"],
             resources: [.process("Resources")]
         ),
     ]
