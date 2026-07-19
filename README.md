@@ -22,7 +22,7 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 ## ✨ Features
 
 **Picture & sound**
-- 🎞️ Native **Dolby Vision**, HDR10+ and **Dolby Atmos** — passed through to the system, not tone-mapped away
+- 🎞️ Native **Dolby Vision** and **Dolby Atmos** — passed through to the system, not tone-mapped away
 - 📼 MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
 - 🎚️ Hardware decoding with software fallback, 4K/8K, high frame rate
 - 🔊 Multichannel and spatial audio, with TrueHD/DTS transcoded losslessly when passthrough isn't available
@@ -39,7 +39,7 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 - 🌐 Network I/O stays in Swift, so TLS and connection handling use the system stack
 
 **Subtitles**
-- 🔤 ASS/SSA rendered through libass, including karaoke and typesetting
+- 🔤 ASS/SSA, SRT and WebVTT parsed and rendered natively, with positioning and styling
 - 📦 Embedded-font extraction — fansub releases render with their own fonts
 - 📐 Font scaling derived from the script's `PlayResY` instead of guessed
 - 🈯 Text, image (SUP/PGS) and closed captions
@@ -142,16 +142,16 @@ KSVideoPlayerView(coordinator: coordinator, url: url, options: options)
 | `Sources/Lumen/AVPlayer/` | `KSPlayerLayer`, options, player protocols, PiP |
 | `Sources/Lumen/Cache/` | Byte cache, `URLSession` reader, AVIO bridge |
 | `Sources/Lumen/SwiftUI/TVOS/` | The tvOS interface — transport bar, panels, scrubber, glass styles |
-| `Sources/Lumen/Subtitle/` | Parsing, libass rendering, embedded fonts |
+| `Sources/Lumen/Subtitle/` | Parsing, rendering, embedded fonts |
 | `Sources/Lumen/Metal/` | Shaders and pixel-buffer rendering |
 
 ## 🗺️ Roadmap
 
-Planned work lives in [`ROADMAP.md`](./ROADMAP.md), with the research behind each task under `context/`.
+What's planned next — native Dolby Vision dynamic metadata, instant stream switching, full ASS effects — lives in [`ROADMAP.md`](./ROADMAP.md).
 
 ## 🙏 Credits
 
-Lumen grew out of [**KSPlayer**](https://github.com/kingslay/KSPlayer) by [kingslay](https://github.com/kingslay), and owes it the foundation it stands on. It also builds on [FFmpeg](https://ffmpeg.org), [libass](https://github.com/libass/libass) and the build scripts from [MPVKit](https://github.com/mpvkit/MPVKit).
+Lumen grew out of [**KSPlayer**](https://github.com/kingslay/KSPlayer) by [kingslay](https://github.com/kingslay), and owes it the foundation it stands on. It also builds on [FFmpeg](https://ffmpeg.org) and the build scripts from [MPVKit](https://github.com/mpvkit/MPVKit).
 
 ## ⚖️ License
 
