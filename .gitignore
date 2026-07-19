@@ -4,3 +4,6 @@
 xcuserdata
 .swiftpm
 Script
+# Notas de planejamento locais (nao versionadas neste repo)
+context/
+ROADMAP.md
