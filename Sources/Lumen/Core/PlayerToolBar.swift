@@ -137,30 +137,20 @@ public class PlayerToolBar: UIStackView {
         playButton.tag = PlayerButtonType.play.rawValue
         playButton.setTitleColor(focusColor, for: .focused)
         playButton.setTitleColor(tintColor, for: .normal)
-        playbackRateButton.tag = PlayerButtonType.rate.rawValue
-        playbackRateButton.titleFont = .systemFont(ofSize: 14, weight: .medium)
-        playbackRateButton.setTitleColor(focusColor, for: .focused)
-        playbackRateButton.setTitleColor(tintColor, for: .normal)
-        definitionButton.tag = PlayerButtonType.definition.rawValue
-        definitionButton.titleFont = .systemFont(ofSize: 14, weight: .medium)
-        definitionButton.setTitleColor(focusColor, for: .focused)
-        definitionButton.setTitleColor(tintColor, for: .normal)
-        audioSwitchButton.tag = PlayerButtonType.audioSwitch.rawValue
-        audioSwitchButton.titleFont = .systemFont(ofSize: 14, weight: .medium)
-        audioSwitchButton.setTitleColor(focusColor, for: .focused)
-        audioSwitchButton.setTitleColor(tintColor, for: .normal)
-        videoSwitchButton.tag = PlayerButtonType.videoSwitch.rawValue
-        videoSwitchButton.titleFont = .systemFont(ofSize: 14, weight: .medium)
-        videoSwitchButton.setTitleColor(focusColor, for: .focused)
-        videoSwitchButton.setTitleColor(tintColor, for: .normal)
-        srtButton.tag = PlayerButtonType.srt.rawValue
-        srtButton.titleFont = .systemFont(ofSize: 14, weight: .medium)
-        srtButton.setTitleColor(focusColor, for: .focused)
-        srtButton.setTitleColor(tintColor, for: .normal)
-        pipButton.tag = PlayerButtonType.pictureInPicture.rawValue
-        pipButton.titleFont = .systemFont(ofSize: 14, weight: .medium)
-        pipButton.setTitleColor(focusColor, for: .focused)
-        pipButton.setTitleColor(tintColor, for: .normal)
+        let titledButtons: [(UIButton, PlayerButtonType)] = [
+            (playbackRateButton, .rate),
+            (definitionButton, .definition),
+            (audioSwitchButton, .audioSwitch),
+            (videoSwitchButton, .videoSwitch),
+            (srtButton, .srt),
+            (pipButton, .pictureInPicture),
+        ]
+        for (button, type) in titledButtons {
+            button.tag = type.rawValue
+            button.titleFont = .systemFont(ofSize: 14, weight: .medium)
+            button.setTitleColor(focusColor, for: .focused)
+            button.setTitleColor(tintColor, for: .normal)
+        }
         if #available(macOS 11.0, *) {
             pipButton.setImage(UIImage(systemName: "pip.enter"), for: .normal)
             pipButton.setImage(UIImage(systemName: "pip.exit"), for: .selected)
