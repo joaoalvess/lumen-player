@@ -71,7 +71,6 @@ public class ThumbnailController {
         }
         var codecContext = try videoStream.pointee.codecpar.pointee.createContext(options: nil)
         defer {
-            avcodec_close(codecContext)
             var codecContext: UnsafeMutablePointer<AVCodecContext>? = codecContext
             avcodec_free_context(&codecContext)
         }
@@ -115,7 +114,16 @@ public class ThumbnailController {
                     let image = reScale.transfer(frame: frame.pointee)?.cgImage().map {
                         UIImage(cgImage: $0)
                     }
-                    let currentTimeStamp = frame.pointee.best_effort_timestamp
+                    var currentTimeStamp = frame.pointee.best_effort_timestamp
+                    if currentTimeStamp < 0 {
+                        currentTimeStamp = frame.pointee.pts
+                    }
+                    if currentTimeStamp < 0 {
+                        currentTimeStamp = frame.pointee.pkt_dts
+                    }
+                    if currentTimeStamp < 0 {
+                        currentTimeStamp = max(seek_pos, 0)
+                    }
                     if let image {
                         let thumbnail = FFThumbnail(image: image, time: timeBase.cmtime(for: currentTimeStamp).seconds)
                         thumbnails.append(thumbnail)

@@ -15,6 +15,7 @@ public final class AudioUnitPlayer: AudioOutput {
     private var sourceNodeAudioFormat: AVAudioFormat?
     private var sampleSize = UInt32(MemoryLayout<Float>.size)
     public weak var renderSource: OutputRenderSourceDelegate?
+    private let renderLock = NSLock()
     private var currentRender: AudioFrame? {
         didSet {
             if currentRender == nil {
@@ -95,7 +96,9 @@ public final class AudioUnitPlayer: AudioOutput {
     }
 
     public func flush() {
+        renderLock.lock()
         currentRender = nil
+        renderLock.unlock()
         #if !os(macOS)
         outputLatency = AVAudioSession.sharedInstance().outputLatency
         #endif
@@ -134,6 +137,8 @@ extension AudioUnitPlayer {
     }
 
     private func audioPlayerShouldInputData(ioData: UnsafeMutableAudioBufferListPointer, numberOfFrames: UInt32) {
+        renderLock.lock()
+        defer { renderLock.unlock() }
         var ioDataWriteOffset = 0
         var numberOfSamples = numberOfFrames
         while numberOfSamples > 0 {
@@ -176,13 +181,15 @@ extension AudioUnitPlayer {
         let sizeCopied = (numberOfFrames - numberOfSamples) * sampleSize
         for i in 0 ..< ioData.count {
             let sizeLeft = Int(ioData[i].mDataByteSize - sizeCopied)
-            if sizeLeft > 0 {
-                memset(ioData[i].mData! + Int(sizeCopied), 0, sizeLeft)
+            if sizeLeft > 0, let mData = ioData[i].mData {
+                memset(mData + Int(sizeCopied), 0, sizeLeft)
             }
         }
     }
 
     private func audioPlayerDidRenderSample(sampleTimestamp _: AudioTimeStamp) {
+        renderLock.lock()
+        defer { renderLock.unlock() }
         if let currentRender {
             let currentPreparePosition = currentRender.timestamp + currentRender.duration * Int64(currentRenderReadOffset) / Int64(currentRender.numberOfSamples)
             if currentPreparePosition > 0 {

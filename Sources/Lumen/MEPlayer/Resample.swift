@@ -1,6 +1,6 @@
 //
 //  Resample.swift
-//  Lumen-iOS
+//  Lumen
 //
 //  Created by kintan on 2020/1/27.
 //
@@ -23,7 +23,7 @@ protocol FrameChange {
 }
 
 class VideoSwscale: FrameTransfer {
-    private var imgConvertCtx: OpaquePointer?
+    private var imgConvertCtx: UnsafeMutablePointer<SwsContext>?
     private var format: AVPixelFormat = AV_PIX_FMT_NONE
     private var height: Int32 = 0
     private var width: Int32 = 0
@@ -41,7 +41,7 @@ class VideoSwscale: FrameTransfer {
             outFrame = nil
         } else {
             let dstFormat = format.bestPixelFormat
-            imgConvertCtx = sws_getCachedContext(imgConvertCtx, width, height, self.format, width, height, dstFormat, SWS_BICUBIC, nil, nil, nil)
+            imgConvertCtx = sws_getCachedContext(imgConvertCtx, width, height, self.format, width, height, dstFormat, Int32(SWS_BICUBIC.rawValue), nil, nil, nil)
             outFrame = av_frame_alloc()
             outFrame?.pointee.format = dstFormat.rawValue
             outFrame?.pointee.width = width
@@ -65,7 +65,7 @@ class VideoSwscale: FrameTransfer {
 }
 
 class VideoSwresample: FrameChange {
-    private var imgConvertCtx: OpaquePointer?
+    private var imgConvertCtx: UnsafeMutablePointer<SwsContext>?
     private var format: AVPixelFormat = AV_PIX_FMT_NONE
     private var height: Int32 = 0
     private var width: Int32 = 0
@@ -75,12 +75,14 @@ class VideoSwresample: FrameChange {
     private let dstFormat: AVPixelFormat?
     private let fps: Float
     private let isDovi: Bool
-    init(dstWidth: Int32? = nil, dstHeight: Int32? = nil, dstFormat: AVPixelFormat? = nil, fps: Float = 60, isDovi: Bool) {
+    private let isIPT: Bool
+    init(dstWidth: Int32? = nil, dstHeight: Int32? = nil, dstFormat: AVPixelFormat? = nil, fps: Float = 60, isDovi: Bool, isIPT: Bool = false) {
         self.dstWidth = dstWidth
         self.dstHeight = dstHeight
         self.dstFormat = dstFormat
         self.fps = fps
         self.isDovi = isDovi
+        self.isIPT = isIPT
     }
 
     func change(avframe: UnsafeMutablePointer<AVFrame>) throws -> MEFrame {
@@ -89,6 +91,9 @@ class VideoSwresample: FrameChange {
             frame.corePixelBuffer = unsafeBitCast(avframe.pointee.data.3, to: CVPixelBuffer.self)
         } else {
             frame.corePixelBuffer = transfer(frame: avframe.pointee)
+        }
+        if isIPT, let pixelBuffer = frame.corePixelBuffer {
+            pixelBuffer.applyIPTPQc2Colorimetry()
         }
         return frame
     }
@@ -112,7 +117,7 @@ class VideoSwresample: FrameChange {
             pixelFormatType = dstFormat.osType()!
 //            imgConvertCtx = sws_getContext(width, height, self.format, width, height, dstFormat, SWS_FAST_BILINEAR, nil, nil, nil)
             // AV_PIX_FMT_VIDEOTOOLBOX格式是无法进行swscale的
-            imgConvertCtx = sws_getCachedContext(imgConvertCtx, width, height, self.format, dstWidth, dstHeight, dstFormat, SWS_FAST_BILINEAR, nil, nil, nil)
+            imgConvertCtx = sws_getCachedContext(imgConvertCtx, width, height, self.format, dstWidth, dstHeight, dstFormat, Int32(SWS_FAST_BILINEAR.rawValue), nil, nil, nil)
         }
         pool = CVPixelBufferPool.create(width: dstWidth, height: dstHeight, bytesPerRowAlignment: linesize, pixelFormatType: pixelFormatType)
     }
@@ -148,7 +153,7 @@ class VideoSwresample: FrameChange {
         guard let pool else {
             return nil
         }
-        return autoreleasepool {
+        return autoreleasepool { () -> CVPixelBuffer? in
             var pbuf: CVPixelBuffer?
             let ret = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pbuf)
             guard let pbuf, ret == kCVReturnSuccess else {
@@ -173,16 +178,30 @@ class VideoSwresample: FrameChange {
                     let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pbuf, i)
                     var contents = pbuf.baseAddressOfPlane(at: i)
                     var source = data[i]!
-                    if bufferPlaneCount < planeCount, i + 2 == planeCount {
-                        var sourceU = data[i]!
-                        var sourceV = data[i + 1]!
+                    if bufferPlaneCount < planeCount, i + 2 == planeCount, let dataU = data[i], let dataV = data[i + 1] {
+                        var sourceU = dataU
+                        var sourceV = dataV
+                        let count = size / byteCount
                         var k = 0
                         while k < height {
-                            var j = 0
-                            while j < size {
-                                contents?.advanced(by: 2 * j).copyMemory(from: sourceU.advanced(by: j), byteCount: byteCount)
-                                contents?.advanced(by: 2 * j + byteCount).copyMemory(from: sourceV.advanced(by: j), byteCount: byteCount)
-                                j += byteCount
+                            if byteCount == 2, let dst = contents?.bindMemory(to: UInt16.self, capacity: 2 * count) {
+                                sourceU.withMemoryRebound(to: UInt16.self, capacity: count) { u in
+                                    sourceV.withMemoryRebound(to: UInt16.self, capacity: count) { v in
+                                        var j = 0
+                                        while j < count {
+                                            dst[2 * j] = u[j]
+                                            dst[2 * j + 1] = v[j]
+                                            j += 1
+                                        }
+                                    }
+                                }
+                            } else if byteCount == 1, let dst = contents?.bindMemory(to: UInt8.self, capacity: 2 * count) {
+                                var j = 0
+                                while j < count {
+                                    dst[2 * j] = sourceU[j]
+                                    dst[2 * j + 1] = sourceV[j]
+                                    j += 1
+                                }
                             }
                             contents = contents?.advanced(by: bytesPerRow)
                             sourceU = sourceU.advanced(by: size)
@@ -231,6 +250,8 @@ class AudioSwresample: FrameChange {
     }
 
     private func setup(descriptor: AudioDescriptor) -> Bool {
+        descriptor.lock.lock()
+        defer { descriptor.lock.unlock() }
         var result = swr_alloc_set_opts2(&swrContext, &descriptor.outChannel, descriptor.audioFormat.sampleFormat, Int32(descriptor.audioFormat.sampleRate), &descriptor.channel, descriptor.sampleFormat, descriptor.sampleRate, 0, nil)
         result = swr_init(swrContext)
         if result < 0 {
@@ -243,7 +264,10 @@ class AudioSwresample: FrameChange {
     }
 
     func change(avframe: UnsafeMutablePointer<AVFrame>) throws -> MEFrame {
-        if !(descriptor == avframe.pointee) || outChannel != descriptor.outChannel {
+        descriptor.lock.lock()
+        let needsSetup = !(descriptor == avframe.pointee) || outChannel != descriptor.outChannel
+        descriptor.lock.unlock()
+        if needsSetup {
             let newDescriptor = AudioDescriptor(frame: avframe.pointee)
             if setup(descriptor: newDescriptor) {
                 descriptor = newDescriptor
@@ -254,12 +278,19 @@ class AudioSwresample: FrameChange {
         let numberOfSamples = avframe.pointee.nb_samples
         let outSamples = swr_get_out_samples(swrContext, numberOfSamples)
         var frameBuffer = Array(tuple: avframe.pointee.data).map { UnsafePointer<UInt8>($0) }
+        descriptor.lock.lock()
         let channels = descriptor.outChannel.nb_channels
+        let audioFormat = descriptor.audioFormat
+        descriptor.lock.unlock()
         var bufferSize = [Int32(0)]
         // 返回值是有乘以声道，所以不用返回值
-        _ = av_samples_get_buffer_size(&bufferSize, channels, outSamples, descriptor.audioFormat.sampleFormat, 1)
-        let frame = AudioFrame(dataSize: Int(bufferSize[0]), audioFormat: descriptor.audioFormat)
-        frame.numberOfSamples = UInt32(swr_convert(swrContext, &frame.data, outSamples, &frameBuffer, numberOfSamples))
+        _ = av_samples_get_buffer_size(&bufferSize, channels, outSamples, audioFormat.sampleFormat, 1)
+        let frame = AudioFrame(dataSize: Int(bufferSize[0]), audioFormat: audioFormat)
+        let convertedSamples = swr_convert(swrContext, &frame.data, outSamples, &frameBuffer, numberOfSamples)
+        if convertedSamples < 0 {
+            KSLog(NSError(errorCode: .auidoSwrInit, avErrorCode: convertedSamples))
+        }
+        frame.numberOfSamples = UInt32(max(convertedSamples, 0))
         return frame
     }
 
@@ -270,6 +301,7 @@ class AudioSwresample: FrameChange {
 
 public class AudioDescriptor: Equatable {
 //    static let defaultValue = AudioDescriptor()
+    fileprivate let lock = NSLock()
     public let sampleRate: Int32
     public private(set) var audioFormat: AVAudioFormat
     fileprivate(set) var channel: AVChannelLayout
@@ -374,6 +406,8 @@ public class AudioDescriptor: Equatable {
     }
 
     public func updateAudioFormat() {
+        lock.lock()
+        defer { lock.unlock() }
         #if os(macOS)
         let channelCount = AVAudioChannelCount(2)
         #else

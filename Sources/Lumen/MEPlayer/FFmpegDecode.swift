@@ -28,14 +28,18 @@ class FFmpegDecode: DecodeProtocol {
         codecContext?.pointee.time_base = assetTrack.timebase.rational
         filter = MEFilter(timebase: assetTrack.timebase, isAudio: assetTrack.mediaType == .audio, nominalFrameRate: assetTrack.nominalFrameRate, options: options)
         if assetTrack.mediaType == .video {
-            frameChange = VideoSwresample(fps: assetTrack.nominalFrameRate, isDovi: assetTrack.dovi != nil)
+            frameChange = VideoSwresample(fps: assetTrack.nominalFrameRate, isDovi: assetTrack.dovi != nil, isIPT: assetTrack.dovi?.isIPTPQc2 == true)
         } else {
             frameChange = AudioSwresample(audioDescriptor: assetTrack.audioDescriptor!)
         }
     }
 
     func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
-        guard let codecContext, avcodec_send_packet(codecContext, packet.corePacket) == 0 else {
+        guard let codecContext else {
+            return
+        }
+        var sendResult = avcodec_send_packet(codecContext, packet.corePacket)
+        guard sendResult == 0 || sendResult == AVError.tryAgain.code else {
             return
         }
         // 需要avcodec_send_packet之后，properties的值才会变成FF_CODEC_PROPERTY_CLOSED_CAPTIONS
@@ -110,7 +114,7 @@ class FFmpegDecode: DecodeProtocol {
                                     display_primaries_r_y: UInt16(data.display_primaries.0.1.num).bigEndian,
                                     display_primaries_g_x: UInt16(data.display_primaries.1.0.num).bigEndian,
                                     display_primaries_g_y: UInt16(data.display_primaries.1.1.num).bigEndian,
-                                    display_primaries_b_x: UInt16(data.display_primaries.2.1.num).bigEndian,
+                                    display_primaries_b_x: UInt16(data.display_primaries.2.0.num).bigEndian,
                                     display_primaries_b_y: UInt16(data.display_primaries.2.1.num).bigEndian,
                                     white_point_x: UInt16(data.white_point.0.num).bigEndian,
                                     white_point_y: UInt16(data.white_point.1.num).bigEndian,
@@ -175,6 +179,12 @@ class FFmpegDecode: DecodeProtocol {
                     avcodec_flush_buffers(codecContext)
                     break
                 } else if result == AVError.tryAgain.code {
+                    if sendResult == AVError.tryAgain.code {
+                        sendResult = avcodec_send_packet(codecContext, packet.corePacket)
+                        if sendResult == 0 {
+                            continue
+                        }
+                    }
                     break
                 } else {
                     let error = NSError(errorCode: packet.assetTrack.mediaType == .audio ? .codecAudioReceiveFrame : .codecVideoReceiveFrame, avErrorCode: result)

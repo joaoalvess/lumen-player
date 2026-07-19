@@ -80,6 +80,7 @@ public class KSMEPlayer: NSObject {
             if playbackRate != audioOutput.playbackRate {
                 audioOutput.playbackRate = playbackRate
                 if audioOutput is AudioUnitPlayer {
+                    MEFilter.filtersLock.lock()
                     var audioFilters = options.audioFilters.filter {
                         !$0.hasPrefix("atempo=")
                     }
@@ -87,6 +88,7 @@ public class KSMEPlayer: NSObject {
                         audioFilters.append("atempo=\(playbackRate)")
                     }
                     options.audioFilters = audioFilters
+                    MEFilter.filtersLock.unlock()
                 }
             }
         }
@@ -227,8 +229,10 @@ extension KSMEPlayer: MEPlayerDelegate {
             if self.options.isLoopPlay {
                 self.loopCount += 1
                 self.delegate?.playBack(player: self, loopCount: self.loopCount)
-                self.audioOutput.play()
-                self.videoOutput?.play()
+                if self.playbackState == .playing, self.loadState == .playable {
+                    self.audioOutput.play()
+                    self.videoOutput?.play()
+                }
             } else {
                 self.playbackState = .finished
             }
@@ -537,7 +541,10 @@ extension KSMEPlayer: AVPlaybackCoordinatorPlaybackControlDelegate {
         guard seekCommand.expectedCurrentItemIdentifier == (playbackCoordinator as? AVDelegatingPlaybackCoordinator)?.currentItemIdentifier else {
             return
         }
-        let seekTime = fmod(seekCommand.itemTime.seconds, duration)
+        let seekTime = duration > 0 ? fmod(seekCommand.itemTime.seconds, duration) : seekCommand.itemTime.seconds
+        guard seekTime.isFinite else {
+            return
+        }
         if abs(currentPlaybackTime - seekTime) < CGFLOAT_EPSILON {
             return
         }
@@ -559,7 +566,7 @@ extension KSMEPlayer: AVPlaybackCoordinatorPlaybackControlDelegate {
             }
             self.bufferingCountDownTimer?.invalidate()
             self.bufferingCountDownTimer = nil
-            self.bufferingCountDownTimer = Timer(timeInterval: countDown, repeats: false) { _ in
+            self.bufferingCountDownTimer = Timer.scheduledTimer(withTimeInterval: countDown, repeats: false) { _ in
                 completionHandler()
             }
         }
@@ -582,7 +589,12 @@ public extension KSMEPlayer {
         playerItem.startRecord(url: url)
     }
 
-    func stoptRecord() {
+    func stopRecord() {
         playerItem.stopRecord()
+    }
+
+    @available(*, deprecated, renamed: "stopRecord()")
+    func stoptRecord() {
+        stopRecord()
     }
 }

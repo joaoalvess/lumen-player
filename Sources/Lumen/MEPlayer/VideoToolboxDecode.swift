@@ -30,7 +30,11 @@ class VideoToolboxDecode: DecodeProtocol {
     func decodeFrame(from packet: Packet, completionHandler: @escaping (Result<MEFrame, Error>) -> Void) {
         if needReconfig {
             // 解决从后台切换到前台，解码失败的问题
-            session = DecompressionSession(assetTrack: session.assetTrack, options: options)!
+            guard let newSession = DecompressionSession(assetTrack: session.assetTrack, options: options) else {
+                completionHandler(.failure(NSError(errorCode: .codecVideoReceiveFrame, avErrorCode: kVTInvalidSessionErr)))
+                return
+            }
+            session = newSession
             doFlushCodec()
             needReconfig = false
         }
@@ -63,6 +67,9 @@ class VideoToolboxDecode: DecodeProtocol {
                     return
                 }
                 let frame = VideoVTBFrame(fps: session.assetTrack.nominalFrameRate, isDovi: session.assetTrack.dovi != nil)
+                if session.assetTrack.dovi?.isIPTPQc2 == true, let imageBuffer {
+                    imageBuffer.applyIPTPQc2Colorimetry()
+                }
                 frame.corePixelBuffer = imageBuffer
                 frame.timebase = session.assetTrack.timebase
                 if packet.isKeyFrame, packetFlags & AV_PKT_FLAG_DISCARD != 0, self.lastPosition > 0 {
@@ -165,16 +172,19 @@ extension CMFormatDescription {
                 var nalSize: UInt32 = 0
                 let end = data + size
                 var nalStart = data
-                while nalStart < end {
+                while end - nalStart >= 3 {
                     nalSize = UInt32(nalStart[0]) << 16 | UInt32(nalStart[1]) << 8 | UInt32(nalStart[2])
-                    avio_wb32(ioContext, nalSize)
                     nalStart += 3
+                    if Int(nalSize) > end - nalStart {
+                        break
+                    }
+                    avio_wb32(ioContext, nalSize)
                     avio_write(ioContext, nalStart, Int32(nalSize))
                     nalStart += Int(nalSize)
                 }
                 var demuxBuffer: UnsafeMutablePointer<UInt8>?
                 let demuxSze = avio_close_dyn_buf(ioContext, &demuxBuffer)
-                return try createSampleBuffer(data: demuxBuffer, size: Int(demuxSze))
+                return try createSampleBuffer(data: demuxBuffer, size: Int(demuxSze), isFreeWhenDone: true)
             } else {
                 throw NSError(errorCode: .codecVideoReceiveFrame, avErrorCode: status)
             }
@@ -183,11 +193,24 @@ extension CMFormatDescription {
         }
     }
 
-    private func createSampleBuffer(data: UnsafeMutablePointer<UInt8>?, size: Int) throws -> CMSampleBuffer {
+    private func createSampleBuffer(data: UnsafeMutablePointer<UInt8>?, size: Int, isFreeWhenDone: Bool = false) throws -> CMSampleBuffer {
         var blockBuffer: CMBlockBuffer?
         var sampleBuffer: CMSampleBuffer?
         // swiftlint:disable line_length
-        var status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: data, blockLength: size, blockAllocator: kCFAllocatorNull, customBlockSource: nil, offsetToData: 0, dataLength: size, flags: 0, blockBufferOut: &blockBuffer)
+        var status: OSStatus
+        if isFreeWhenDone {
+            var avFreeBlockSource = CMBlockBufferCustomBlockSource()
+            avFreeBlockSource.version = kCMBlockBufferCustomBlockSourceVersion
+            avFreeBlockSource.FreeBlock = { _, memoryBlock, _ in
+                av_free(memoryBlock)
+            }
+            status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: data, blockLength: size, blockAllocator: nil, customBlockSource: &avFreeBlockSource, offsetToData: 0, dataLength: size, flags: 0, blockBufferOut: &blockBuffer)
+            if status != noErr {
+                av_free(data)
+            }
+        } else {
+            status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: data, blockLength: size, blockAllocator: kCFAllocatorNull, customBlockSource: nil, offsetToData: 0, dataLength: size, flags: 0, blockBufferOut: &blockBuffer)
+        }
         if status == noErr {
             status = CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: self, sampleCount: 1, sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sampleBuffer)
             if let sampleBuffer {

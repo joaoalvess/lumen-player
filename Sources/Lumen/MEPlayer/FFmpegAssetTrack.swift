@@ -185,13 +185,14 @@ public class FFmpegAssetTrack: MediaPlayerTrack {
             let atomsData: Data?
             if let extradata {
                 extradataSize = codecpar.extradata_size
+                var data = Data(bytes: extradata, count: Int(extradataSize))
                 if extradataSize >= 5, extradata[4] == 0xFE {
-                    extradata[4] = 0xFF
+                    data[4] = 0xFF
                     isConvertNALSize = true
                 } else {
                     isConvertNALSize = false
                 }
-                atomsData = Data(bytes: extradata, count: Int(extradataSize))
+                atomsData = data
             } else {
                 if codecType.rawValue == kCMVideoCodecType_VP9 {
                     // ff_videotoolbox_vpcc_extradata_create
@@ -208,6 +209,7 @@ public class FFmpegAssetTrack: MediaPlayerTrack {
                     var array: [UInt8] = [1, 0, 0, 0]
                     data.append(&array, count: 4)
                     data.append(extradata, count: Int(extradataSize))
+                    av_free(extradata)
                     atomsData = data
                 } else {
                     atomsData = nil

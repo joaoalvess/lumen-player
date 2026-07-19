@@ -22,12 +22,37 @@ protocol PlayerItemTrackProtocol: CapacityProtocol, AnyObject {
 }
 
 class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomStringConvertible {
-    var seekTime = 0.0
+    private let seekTimeLock = NSLock()
+    private var _seekTime = 0.0
+    var seekTime: Double {
+        get {
+            seekTimeLock.lock()
+            defer { seekTimeLock.unlock() }
+            return _seekTime
+        }
+        set {
+            seekTimeLock.lock()
+            defer { seekTimeLock.unlock() }
+            _seekTime = newValue
+        }
+    }
+
     fileprivate let options: KSOptions
+    fileprivate let decoderLock = NSLock()
     fileprivate var decoderMap = [Int32: DecodeProtocol]()
-    fileprivate var state = MECodecState.idle {
-        didSet {
-            if state == .finished {
+    private let stateLock = NSLock()
+    private var _state = MECodecState.idle
+    fileprivate var state: MECodecState {
+        get {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return _state
+        }
+        set {
+            stateLock.lock()
+            _state = newValue
+            stateLock.unlock()
+            if newValue == .finished {
                 seekTime = 0
             }
         }
@@ -82,6 +107,8 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
     }
 
     func putPacket(packet: Packet) {
+        decoderLock.lock()
+        defer { decoderLock.unlock() }
         if state == .flush {
             decoderMap.values.forEach { $0.doFlushCodec() }
             state = .decoding
@@ -107,6 +134,10 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
         }
         state = .closed
         outputRenderQueue.shutdown()
+        decoderLock.lock()
+        defer { decoderLock.unlock() }
+        decoderMap.values.forEach { $0.shutdown() }
+        decoderMap.removeAll()
     }
 
     private var lastPacketBytes = Int32(0)
@@ -203,7 +234,7 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
 
     required init(mediaType: AVFoundation.AVMediaType, frameCapacity: UInt8, options: KSOptions) {
         super.init(mediaType: mediaType, frameCapacity: frameCapacity, options: options)
-        operationQueue.name = "KSPlayer_" + mediaType.rawValue
+        operationQueue.name = "Lumen_" + mediaType.rawValue
         operationQueue.maxConcurrentOperationCount = 1
         operationQueue.qualityOfService = .userInteractive
     }
@@ -273,7 +304,8 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
         if state == .idle {
             return
         }
-        super.shutdown()
+        state = .closed
+        outputRenderQueue.shutdown()
         packetQueue.shutdown()
     }
 }

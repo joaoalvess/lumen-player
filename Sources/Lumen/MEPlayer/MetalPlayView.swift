@@ -182,7 +182,7 @@ extension MetalPlayView {
             let cmtime = frame.cmtime
             let par = pixelBuffer.size
             let sar = pixelBuffer.aspectRatio
-            if let pixelBuffer = pixelBuffer.cvPixelBuffer, options.isUseDisplayLayer() {
+            if let pixelBuffer = pixelBuffer.cvPixelBuffer, options.isUseDisplayLayer(), !pixelBuffer.isIPT {
                 if displayView.isHidden {
                     displayView.isHidden = false
                     metalView.isHidden = true
@@ -366,7 +366,8 @@ class AVSampleBufferDisplayView: UIView {
 import CoreVideo
 
 class CADisplayLink {
-    private let displayLink: CVDisplayLink
+    private let displayLink: CVDisplayLink?
+    private let runloopLock = NSLock()
     private var runloop: RunLoop?
     private var mode = RunLoop.Mode.default
     public var preferredFramesPerSecond = 60
@@ -380,14 +381,17 @@ class CADisplayLink {
 
     public var timestamp: TimeInterval {
         var timeStamp = CVTimeStamp()
-        if CVDisplayLinkGetCurrentTime(displayLink, &timeStamp) == kCVReturnSuccess, (timeStamp.flags & CVTimeStampFlags.hostTimeValid.rawValue) != 0 {
+        if let displayLink, CVDisplayLinkGetCurrentTime(displayLink, &timeStamp) == kCVReturnSuccess, (timeStamp.flags & CVTimeStampFlags.hostTimeValid.rawValue) != 0 {
             return TimeInterval(timeStamp.hostTime / NSEC_PER_SEC)
         }
         return 0
     }
 
     public var duration: TimeInterval {
-        CVDisplayLinkGetActualOutputVideoRefreshPeriod(displayLink)
+        if let displayLink {
+            return CVDisplayLinkGetActualOutputVideoRefreshPeriod(displayLink)
+        }
+        return 0
     }
 
     public var targetTimestamp: TimeInterval {
@@ -396,9 +400,15 @@ class CADisplayLink {
 
     public var isPaused: Bool {
         get {
-            !CVDisplayLinkIsRunning(displayLink)
+            if let displayLink {
+                return !CVDisplayLinkIsRunning(displayLink)
+            }
+            return true
         }
         set {
+            guard let displayLink else {
+                return
+            }
             if newValue {
                 CVDisplayLinkStop(displayLink)
             } else {
@@ -410,36 +420,52 @@ class CADisplayLink {
     public init(target: NSObject, selector: Selector) {
         var displayLink: CVDisplayLink?
         CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
-        self.displayLink = displayLink!
-        CVDisplayLinkSetOutputHandler(self.displayLink) { [weak self] _, _, _, _, _ in
+        self.displayLink = displayLink
+        guard let displayLink else {
+            return
+        }
+        CVDisplayLinkSetOutputHandler(displayLink) { [weak self] _, _, _, _, _ in
             guard let self else { return kCVReturnSuccess }
-            self.runloop?.perform(selector, target: target, argument: self, order: 0, modes: [self.mode])
+            self.runloopLock.lock()
+            let runloop = self.runloop
+            let mode = self.mode
+            self.runloopLock.unlock()
+            runloop?.perform(selector, target: target, argument: self, order: 0, modes: [mode])
             return kCVReturnSuccess
         }
-        CVDisplayLinkStart(self.displayLink)
+        CVDisplayLinkStart(displayLink)
     }
 
     public init(block: @escaping (() -> Void)) {
         var displayLink: CVDisplayLink?
         CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
-        self.displayLink = displayLink!
-        CVDisplayLinkSetOutputHandler(self.displayLink) { _, _, _, _, _ in
+        self.displayLink = displayLink
+        guard let displayLink else {
+            return
+        }
+        CVDisplayLinkSetOutputHandler(displayLink) { _, _, _, _, _ in
             block()
             return kCVReturnSuccess
         }
-        CVDisplayLinkStart(self.displayLink)
+        CVDisplayLinkStart(displayLink)
     }
 
     open func add(to runloop: RunLoop, forMode mode: RunLoop.Mode) {
+        runloopLock.lock()
         self.runloop = runloop
         self.mode = mode
+        runloopLock.unlock()
     }
 
     public func invalidate() {
         isPaused = true
+        runloopLock.lock()
         runloop = nil
-        CVDisplayLinkSetOutputHandler(displayLink) { _, _, _, _, _ in
-            kCVReturnError
+        runloopLock.unlock()
+        if let displayLink {
+            CVDisplayLinkSetOutputHandler(displayLink) { _, _, _, _, _ in
+                kCVReturnError
+            }
         }
     }
 }

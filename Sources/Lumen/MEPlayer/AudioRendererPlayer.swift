@@ -116,6 +116,9 @@ public class AudioRendererPlayer: AudioOutput {
             guard var render = renderSource?.getAudioOutputRender() else {
                 break
             }
+            guard render.numberOfSamples > 0 else {
+                continue
+            }
             var array = [render]
             let loopCount = Int32(render.audioFormat.sampleRate) / 20 / Int32(render.numberOfSamples) - 2
             if loopCount > 0 {

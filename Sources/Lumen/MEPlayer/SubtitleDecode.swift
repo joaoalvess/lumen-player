@@ -45,9 +45,7 @@ class SubtitleDecode: DecodeProtocol {
         }
         let timestamp = packet.timestamp
         var start = packet.assetTrack.timebase.cmtime(for: timestamp).seconds + TimeInterval(subtitle.start_display_time) / 1000.0
-        if start >= startTime {
-            start -= startTime
-        }
+        start -= startTime
         var duration = 0.0
         if subtitle.end_display_time != UInt32.max {
             duration = TimeInterval(subtitle.end_display_time - subtitle.start_display_time) / 1000.0
@@ -80,8 +78,7 @@ class SubtitleDecode: DecodeProtocol {
     func shutdown() {
         scale.shutdown()
         avsubtitle_free(&subtitle)
-        if let codecContext {
-            avcodec_close(codecContext)
+        if codecContext != nil {
             avcodec_free_context(&self.codecContext)
         }
     }

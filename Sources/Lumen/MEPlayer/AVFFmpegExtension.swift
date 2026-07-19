@@ -30,6 +30,7 @@ extension UnsafeMutablePointer where Pointee == AVCodecContext {
                         break
                     }
                     // 只要有hw_device_ctx就可以了。不需要hw_frames_ctx
+                    av_buffer_unref(&ctx.pointee.hw_device_ctx)
                     ctx.pointee.hw_device_ctx = deviceCtx
 //                    var framesCtx = av_hwframe_ctx_alloc(deviceCtx)
 //                    if let framesCtx {
@@ -92,7 +93,7 @@ extension AVCodecParameters {
         }
         guard let codec = avcodec_find_decoder(codecContext.pointee.codec_id) else {
             avcodec_free_context(&codecContextOption)
-            throw NSError(errorCode: .codecContextFindDecoder, avErrorCode: result)
+            throw NSError(errorCode: .codecContextFindDecoder, avErrorCode: swift_AVERROR_DECODER_NOT_FOUND)
         }
         codecContext.pointee.codec_id = codec.pointee.id
         codecContext.pointee.flags2 |= AV_CODEC_FLAG2_FAST

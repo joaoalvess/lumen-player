@@ -10,6 +10,7 @@ import Libavfilter
 import Libavutil
 
 class MEFilter {
+    static let filtersLock = NSLock()
     private var graph: UnsafeMutablePointer<AVFilterGraph>?
     private var bufferSrcContext: UnsafeMutablePointer<AVFilterContext>?
     private var bufferSinkContext: UnsafeMutablePointer<AVFilterContext>?
@@ -21,6 +22,7 @@ class MEFilter {
     deinit {
         graph?.pointee.opaque = nil
         avfilter_graph_free(&graph)
+        av_buffer_unref(&params.hw_frames_ctx)
     }
 
     public init(timebase: Timebase, isAudio: Bool, nominalFrameRate: Float, options: KSOptions) {
@@ -104,6 +106,7 @@ class MEFilter {
 
     public func filter(options: KSOptions, inputFrame: UnsafeMutablePointer<AVFrame>, completionHandler: (UnsafeMutablePointer<AVFrame>) -> Void) {
         let filters: String
+        MEFilter.filtersLock.lock()
         if isAudio {
             filters = options.audioFilters.joined(separator: ",")
         } else {
@@ -112,6 +115,7 @@ class MEFilter {
             }
             filters = options.videoFilters.joined(separator: ",")
         }
+        MEFilter.filtersLock.unlock()
         guard !filters.isEmpty else {
             completionHandler(inputFrame)
             return
@@ -129,12 +133,15 @@ class MEFilter {
         params.sample_rate = inputFrame.pointee.sample_rate
         params.ch_layout = inputFrame.pointee.ch_layout
         if self.params != params || self.filters != filters {
+            av_buffer_unref(&self.params.hw_frames_ctx)
             self.params = params
             self.filters = filters
             if !setup(filters: filters) {
                 completionHandler(inputFrame)
                 return
             }
+        } else {
+            av_buffer_unref(&params.hw_frames_ctx)
         }
         let ret = av_buffersrc_add_frame_flags(bufferSrcContext, inputFrame, 0)
         if ret < 0 {
