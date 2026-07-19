@@ -79,6 +79,7 @@ public class KSAVPlayer {
 
     private let playerView = KSAVPlayerView()
     private var urlAsset: AVURLAsset
+    private var cacheResourceLoader: DiskCacheResourceLoader?
     private var shouldSeekTo = TimeInterval(0)
     private var playerLooper: AVPlayerLooper?
     private var statusObservation: NSKeyValueObservation?
@@ -90,6 +91,7 @@ public class KSAVPlayer {
     private var loopCountObservation: NSKeyValueObservation?
     private var loopStatusObservation: NSKeyValueObservation?
     private var mediaPlayerTracks = [AVMediaPlayerTrack]()
+    private let embedSubtitleDataSouce = AVSubtitleDataSouce()
     private var error: Error? {
         didSet {
             if let error {
@@ -213,12 +215,26 @@ public class KSAVPlayer {
 
     public required init(url: URL, options: KSOptions) {
         KSOptions.setAudioSession()
-        urlAsset = AVURLAsset(url: url, options: options.avOptions)
+        let (asset, loader) = KSAVPlayer.makeAsset(url: url, options: options)
+        urlAsset = asset
+        cacheResourceLoader = loader
         self.options = options
         itemObservation = player.observe(\.currentItem) { [weak self] player, _ in
             guard let self else { return }
             self.observer(playerItem: player.currentItem)
         }
+    }
+
+    private static func makeAsset(url: URL, options: KSOptions) -> (AVURLAsset, DiskCacheResourceLoader?) {
+        if let directory = options.diskCacheDirectory,
+           let assetURL = DiskCacheResourceLoader.assetURL(for: url),
+           let loader = DiskCacheResourceLoader(url: url, directory: directory, key: options.diskCacheKey(for: url), maxBytes: options.diskCacheMaxBytes, headers: options.diskCacheHTTPHeaders())
+        {
+            let asset = AVURLAsset(url: assetURL, options: options.avOptions)
+            asset.resourceLoader.setDelegate(loader, queue: loader.delegateQueue)
+            return (asset, loader)
+        }
+        return (AVURLAsset(url: url, options: options.avOptions), nil)
     }
 }
 
@@ -265,6 +281,7 @@ extension KSAVPlayer {
             duration = item.duration.seconds
             let estimatedDataRates = item.tracks.compactMap { $0.assetTrack?.estimatedDataRate }
             fileSize = Double(estimatedDataRates.reduce(0, +)) * duration / 8
+            embedSubtitleDataSouce.load(playerItem: item)
             isReadyToPlay = true
         } else if item.status == .failed {
             error = item.error
@@ -324,8 +341,8 @@ extension KSAVPlayer {
     }
 
     private func observer(playerItem: AVPlayerItem?) {
-        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: playerItem)
-        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: playerItem)
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: nil)
         statusObservation?.invalidate()
         loadedTimeRangesObservation?.invalidate()
         bufferEmptyObservation?.invalidate()
@@ -360,7 +377,7 @@ extension KSAVPlayer {
 }
 
 extension KSAVPlayer: MediaPlayerProtocol {
-    public var subtitleDataSouce: SubtitleDataSouce? { nil }
+    public var subtitleDataSouce: SubtitleDataSouce? { embedSubtitleDataSouce }
     public var isPlaying: Bool { player.rate > 0 ? true : playbackState == .playing }
     public var view: UIView? { playerView }
     public var currentPlaybackTime: TimeInterval {
@@ -448,7 +465,10 @@ extension KSAVPlayer: MediaPlayerProtocol {
     public func replace(url: URL, options: KSOptions) {
         KSLog("replaceUrl \(self)")
         shutdown()
-        urlAsset = AVURLAsset(url: url, options: options.avOptions)
+        cacheResourceLoader?.close()
+        let (asset, loader) = KSAVPlayer.makeAsset(url: url, options: options)
+        urlAsset = asset
+        cacheResourceLoader = loader
         self.options = options
     }
 
@@ -507,10 +527,6 @@ extension AVFoundation.AVMediaType {
     }
 }
 
-extension AVAssetTrack {
-    func toMediaPlayerTrack() {}
-}
-
 class AVMediaPlayerTrack: MediaPlayerTrack {
     let formatDescription: CMFormatDescription?
     let description: String
@@ -565,8 +581,106 @@ class AVMediaPlayerTrack: MediaPlayerTrack {
         }
         #endif
     }
+}
 
-    func load() {}
+final class AVSubtitleInfo: SubtitleInfo {
+    let subtitleID: String
+    let name: String
+    var delay: TimeInterval = 0
+    private let option: AVMediaSelectionOption
+    private let group: AVMediaSelectionGroup
+    private weak var dataSouce: AVSubtitleDataSouce?
+    init(option: AVMediaSelectionOption, group: AVMediaSelectionGroup, subtitleID: String, dataSouce: AVSubtitleDataSouce) {
+        self.option = option
+        self.group = group
+        self.subtitleID = subtitleID
+        self.dataSouce = dataSouce
+        name = option.displayName
+    }
+
+    var isEnabled: Bool {
+        get {
+            dataSouce?.isSelected(option: option, in: group) ?? false
+        }
+        set {
+            if newValue {
+                dataSouce?.select(option: option, in: group)
+            } else if isEnabled {
+                dataSouce?.select(option: nil, in: group)
+            }
+        }
+    }
+
+    func search(for time: TimeInterval) -> [SubtitlePart] {
+        guard isEnabled, let dataSouce else {
+            return []
+        }
+        return dataSouce.parts.filter { $0 == time }
+    }
+}
+
+final class AVSubtitleDataSouce: NSObject, SubtitleDataSouce {
+    private(set) var infos = [any SubtitleInfo]()
+    fileprivate var parts = [SubtitlePart]()
+    private weak var playerItem: AVPlayerItem?
+    private var output: AVPlayerItemLegibleOutput?
+
+    func load(playerItem: AVPlayerItem) {
+        guard self.playerItem !== playerItem else {
+            return
+        }
+        detachOutput()
+        self.playerItem = playerItem
+        var newInfos = [any SubtitleInfo]()
+        if let group = playerItem.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+            for (index, option) in group.options.enumerated() {
+                newInfos.append(AVSubtitleInfo(option: option, group: group, subtitleID: "\(index) \(option.displayName)", dataSouce: self))
+            }
+        }
+        infos = newInfos
+    }
+
+    fileprivate func isSelected(option: AVMediaSelectionOption, in group: AVMediaSelectionGroup) -> Bool {
+        playerItem?.currentMediaSelection.selectedMediaOption(in: group) == option
+    }
+
+    fileprivate func select(option: AVMediaSelectionOption?, in group: AVMediaSelectionGroup) {
+        guard let playerItem else {
+            return
+        }
+        if let option {
+            attachOutput(playerItem: playerItem)
+            playerItem.select(option, in: group)
+        } else {
+            playerItem.select(nil, in: group)
+            detachOutput()
+        }
+    }
+
+    private func attachOutput(playerItem: AVPlayerItem) {
+        guard output == nil else {
+            return
+        }
+        let output = AVPlayerItemLegibleOutput()
+        output.suppressesPlayerRendering = true
+        output.setDelegate(self, queue: .main)
+        playerItem.add(output)
+        self.output = output
+    }
+
+    private func detachOutput() {
+        parts = []
+        if let output, let playerItem {
+            playerItem.remove(output)
+        }
+        output = nil
+    }
+}
+
+extension AVSubtitleDataSouce: AVPlayerItemLegibleOutputPushDelegate {
+    func legibleOutput(_: AVPlayerItemLegibleOutput, didOutputAttributedStrings strings: [NSAttributedString], nativeSampleBuffers _: [Any], forItemTime itemTime: CMTime) {
+        parts = strings.filter { $0.length > 0 }.map { SubtitlePart(itemTime.seconds, .infinity, attributedString: $0) }
+    }
 }
 
 public extension AVAsset {

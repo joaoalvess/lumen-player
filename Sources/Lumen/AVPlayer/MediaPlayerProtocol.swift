@@ -1,6 +1,6 @@
 //
 //  MediaPlayerProtocol.swift
-//  Lumen-tvOS
+//  Lumen
 //
 //  Created by kintan on 2018/3/9.
 //
@@ -159,6 +159,12 @@ public struct DOVIDecoderConfigurationRecord {
     public let el_present_flag: UInt8
     public let bl_present_flag: UInt8
     public let dv_bl_signal_compatibility_id: UInt8
+}
+
+public extension DOVIDecoderConfigurationRecord {
+    var isIPTPQc2: Bool {
+        dv_profile == 5 && dv_bl_signal_compatibility_id == 0
+    }
 }
 
 public enum FFmpegFieldOrder: UInt8 {

@@ -119,9 +119,9 @@ extension DynamicRange {
         switch self {
         case .sdr:
             return kCVImageBufferTransferFunction_ITU_R_709_2
-        case .hdr10:
+        case .hdr10, .dolbyVision:
             return kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
-        case .hlg, .dolbyVision:
+        case .hlg:
             return kCVImageBufferTransferFunction_ITU_R_2100_HLG
         }
     }
@@ -197,7 +197,7 @@ public struct LoadingState {
     public let isSeek: Bool
 }
 
-public let KSPlayerErrorDomain = "KSPlayerErrorDomain"
+public let KSPlayerErrorDomain = "LumenErrorDomain"
 
 public enum KSPlayerErrorCode: Int {
     case unknown

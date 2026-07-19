@@ -133,9 +133,7 @@ open class KSPlayerLayer: NSObject {
                 firstPlayerType = KSAVPlayer.self
             } else if options.display != .plane {
                 // AR模式只能用KSMEPlayer
-                // swiftlint:disable force_cast
-                firstPlayerType = NSClassFromString("Lumen.KSMEPlayer") as! MediaPlayerProtocol.Type
-                // swiftlint:enable force_cast
+                firstPlayerType = KSMEPlayer.self
             } else {
                 firstPlayerType = KSOptions.firstPlayerType
             }
@@ -199,9 +197,7 @@ open class KSPlayerLayer: NSObject {
         let firstPlayerType: MediaPlayerProtocol.Type
         if options.display != .plane {
             // AR模式只能用KSMEPlayer
-            // swiftlint:disable force_cast
-            firstPlayerType = NSClassFromString("Lumen.KSMEPlayer") as! MediaPlayerProtocol.Type
-            // swiftlint:enable force_cast
+            firstPlayerType = KSMEPlayer.self
         } else {
             firstPlayerType = KSOptions.firstPlayerType
         }
@@ -238,6 +234,7 @@ open class KSPlayerLayer: NSObject {
     }
 
     deinit {
+        timer.invalidate()
         if #available(iOS 15.0, tvOS 15.0, macOS 12.0, *) {
             player.pipController?.contentSource = nil
         }
@@ -255,6 +252,7 @@ open class KSPlayerLayer: NSObject {
         MPRemoteCommandCenter.shared().skipBackwardCommand.removeTarget(nil)
         MPRemoteCommandCenter.shared().changePlaybackPositionCommand.removeTarget(nil)
         MPRemoteCommandCenter.shared().enableLanguageOptionCommand.removeTarget(nil)
+        KSOptions.deactivateAudioSession()
         options.playerLayerDeinit()
     }
 
@@ -444,6 +442,7 @@ extension KSPlayerLayer: MediaPlayerDelegate {
     public func finish(player: some MediaPlayerProtocol, error: Error?) {
         if let error {
             if type(of: player) != KSOptions.secondPlayerType, let secondPlayerType = KSOptions.secondPlayerType {
+                player.shutdown()
                 self.player = secondPlayerType.init(url: url, options: options)
                 return
             }

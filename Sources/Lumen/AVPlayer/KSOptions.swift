@@ -1,6 +1,6 @@
 //
 //  KSOptions.swift
-//  Lumen-tvOS
+//  Lumen
 //
 //  Created by kintan on 2018/3/9.
 //
@@ -35,9 +35,9 @@ open class KSOptions {
      AVSEEK_FLAG_FRAME: 8
      */
     public var seekFlags = Int32(1)
-    // ffmpeg only cache http
-    // 这个开关不能用，因为ff_tempfile: Cannot open temporary file
-    public var cache = false
+    public var diskCacheDirectory = KSOptions.diskCacheDirectory
+    public var diskCacheMaxBytes = KSOptions.diskCacheMaxBytes
+    public var diskCacheKey: String?
     //  record stream
     public var outputURL: URL?
     public var avOptions = [String: Any]()
@@ -313,7 +313,7 @@ open class KSOptions {
                 // todo 先不要用yadif_videotoolbox，不然会crash。这个后续在看下要怎么解决
                 hardwareDecode = false
                 asynchronousDecompression = false
-                let yadif = hardwareDecode ? "yadif_videotoolbox" : "yadif"
+                let yadif = "yadif"
                 var yadifMode = KSOptions.yadifMode
 //                if let assetTrack = assetTrack as? FFmpegAssetTrack {
 //                    if assetTrack.realFrameRate.num == 2 * assetTrack.avgFrameRate.num, assetTrack.realFrameRate.den == assetTrack.avgFrameRate.den {
@@ -445,8 +445,31 @@ open class KSOptions {
 //        }
     }
 
-    open func process(url _: URL) -> AbstractAVIOContext? {
-        nil
+    open func process(url: URL) -> AbstractAVIOContext? {
+        guard let diskCacheDirectory, DiskCacheAVIOContext.canCache(url: url) else {
+            return nil
+        }
+        return DiskCacheAVIOContext(url: url, directory: diskCacheDirectory, key: diskCacheKey(for: url), maxBytes: diskCacheMaxBytes, headers: diskCacheHTTPHeaders())
+    }
+
+    public func diskCacheKey(for url: URL) -> String {
+        if let diskCacheKey {
+            return diskCacheKey
+        }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.query = nil
+        return components?.url?.absoluteString ?? url.absoluteString
+    }
+
+    public func diskCacheHTTPHeaders() -> [String: String] {
+        var headers = avOptions["AVURLAssetHTTPHeaderFieldsKey"] as? [String: String] ?? [:]
+        if let userAgent, headers["User-Agent"] == nil {
+            headers["User-Agent"] = userAgent
+        }
+        if let referer, headers["Referer"] == nil {
+            headers["Referer"] = referer
+        }
+        return headers
     }
 }
 
@@ -481,6 +504,12 @@ public extension KSOptions {
     static var canStartPictureInPictureAutomaticallyFromInline = true
     static var preferredFrame = true
     static var useSystemHTTPProxy = true
+    static var diskCacheDirectory: URL?
+    static var diskCacheMaxBytes = Int64(2_147_483_648)
+    static var registerEmbeddedFonts = true
+    static var tvSkipInterval = 10
+    static var enableScrubPreview = true
+    static var scrubThumbnailWidth = Int32(768)
     /// 日志级别
     static var logLevel = LogLevel.warning
     static var logger: LogHandler = OSLog(lable: "Lumen")
@@ -505,6 +534,12 @@ public extension KSOptions {
         try? AVAudioSession.sharedInstance().setCategory(category, mode: .moviePlayback, policy: .longFormVideo)
         #endif
         try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+    }
+
+    static func deactivateAudioSession() {
+        #if !os(macOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
     }
 

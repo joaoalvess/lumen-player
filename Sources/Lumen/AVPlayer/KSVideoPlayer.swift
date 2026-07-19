@@ -72,9 +72,11 @@ extension KSVideoPlayer: UIViewRepresentable {
 
     @MainActor
     public final class Coordinator: ObservableObject {
-        public var state: KSPlayerState {
-            playerLayer?.state ?? .initialized
-        }
+        @Published
+        public private(set) var state: KSPlayerState = .initialized
+
+        @Published
+        public private(set) var isSeeking = false
 
         @Published
         public var isMuted: Bool = false {
@@ -116,6 +118,9 @@ extension KSVideoPlayer: UIViewRepresentable {
 
         public var subtitleModel = SubtitleModel()
         public var timemodel = ControllerTimeModel()
+        #if os(tvOS)
+        let scrubThumbnails = ScrubThumbnailProvider()
+        #endif
         // 在SplitView模式下，第二次进入会先调用makeUIView。然后在调用之前的dismantleUIView.所以如果进入的是同一个View的话，就会导致playerLayer被清空了。最准确的方式是在onDisappear清空playerLayer
         public var playerLayer: KSPlayerLayer? {
             didSet {
@@ -125,14 +130,28 @@ extension KSVideoPlayer: UIViewRepresentable {
         }
 
         private var delayHide: DispatchWorkItem?
+        private var isMaskPinned = false
         public var onPlay: ((TimeInterval, TimeInterval) -> Void)?
         public var onFinish: ((KSPlayerLayer, Error?) -> Void)?
         public var onStateChanged: ((KSPlayerLayer, KSPlayerState) -> Void)?
         public var onBufferChanged: ((Int, TimeInterval) -> Void)?
         #if canImport(UIKit)
         fileprivate var onSwipe: ((UISwipeGestureRecognizer.Direction) -> Void)?
+        private weak var swipeGestureView: UIView?
         @objc fileprivate func swipeGestureAction(_ recognizer: UISwipeGestureRecognizer) {
             onSwipe?(recognizer.direction)
+        }
+
+        private func addSwipeGestures(to view: UIView) {
+            guard swipeGestureView !== view else {
+                return
+            }
+            swipeGestureView = view
+            for direction in [UISwipeGestureRecognizer.Direction.down, .left, .right, .up] {
+                let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swipeGestureAction(_:)))
+                swipe.direction = direction
+                view.addGestureRecognizer(swipe)
+            }
         }
         #endif
 
@@ -144,19 +163,25 @@ extension KSVideoPlayer: UIViewRepresentable {
                     self?.subtitleModel.url = url
                 }
             }
+            let view: UIView
             if let playerLayer {
                 if playerLayer.url == url {
-                    return playerLayer.player.view ?? UIView()
+                    view = playerLayer.player.view ?? UIView()
+                } else {
+                    playerLayer.delegate = nil
+                    playerLayer.set(url: url, options: options)
+                    playerLayer.delegate = self
+                    view = playerLayer.player.view ?? UIView()
                 }
-                playerLayer.delegate = nil
-                playerLayer.set(url: url, options: options)
-                playerLayer.delegate = self
-                return playerLayer.player.view ?? UIView()
             } else {
                 let playerLayer = KSPlayerLayer(url: url, options: options, delegate: self)
                 self.playerLayer = playerLayer
-                return playerLayer.player.view ?? UIView()
+                view = playerLayer.player.view ?? UIView()
             }
+            #if canImport(UIKit)
+            addSwipeGestures(to: view)
+            #endif
+            return view
         }
 
         public func resetPlayer() {
@@ -166,10 +191,17 @@ extension KSVideoPlayer: UIViewRepresentable {
             onBufferChanged = nil
             #if canImport(UIKit)
             onSwipe = nil
+            swipeGestureView = nil
             #endif
             playerLayer = nil
             delayHide?.cancel()
             delayHide = nil
+            isMaskPinned = false
+            state = .initialized
+            isSeeking = false
+            #if os(tvOS)
+            scrubThumbnails.shutdown()
+            #endif
             subtitleModel.selectedSubtitleInfo?.isEnabled = false
         }
 
@@ -179,18 +211,29 @@ extension KSVideoPlayer: UIViewRepresentable {
             }
         }
 
-        public func seek(time: TimeInterval) {
-            playerLayer?.seek(time: TimeInterval(time))
+        public func seek(time: TimeInterval, autoPlay: Bool? = nil) {
+            guard let playerLayer else { return }
+            isSeeking = true
+            playerLayer.seek(time: time, autoPlay: autoPlay ?? playerLayer.options.isSeekedAutoPlay) { [weak self] _ in
+                Task { @MainActor in
+                    self?.isSeeking = false
+                }
+            }
         }
 
         @MainActor
         public func mask(show: Bool, autoHide: Bool = true) {
+            if show {
+                isMaskPinned = !autoHide
+            } else {
+                isMaskPinned = false
+            }
             isMaskShow = show
             if show {
                 delayHide?.cancel()
                 // 播放的时候才自动隐藏
                 guard state == .bufferFinished else { return }
-                if autoHide {
+                if autoHide, !isMaskPinned {
                     delayHide = DispatchWorkItem { [weak self] in
                         guard let self else { return }
                         if self.state == .bufferFinished {
@@ -219,6 +262,7 @@ extension KSVideoPlayer: UIViewRepresentable {
 
 extension KSVideoPlayer.Coordinator: KSPlayerLayerDelegate {
     public func player(layer: KSPlayerLayer, state: KSPlayerState) {
+        self.state = state
         onStateChanged?(layer, state)
         if state == .readyToPlay {
             playbackRate = layer.player.playbackRate
@@ -233,29 +277,15 @@ extension KSVideoPlayer.Coordinator: KSPlayerLayerDelegate {
                 }
             }
         } else if state == .bufferFinished {
-            isMaskShow = false
+            if !isMaskPinned {
+                isMaskShow = false
+            }
         } else {
             isMaskShow = true
-            #if canImport(UIKit)
-            if state == .preparing, let view = layer.player.view {
-                let swipeDown = UISwipeGestureRecognizer(target: self, action: #selector(swipeGestureAction(_:)))
-                swipeDown.direction = .down
-                view.addGestureRecognizer(swipeDown)
-                let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(swipeGestureAction(_:)))
-                swipeLeft.direction = .left
-                view.addGestureRecognizer(swipeLeft)
-                let swipeRight = UISwipeGestureRecognizer(target: self, action: #selector(swipeGestureAction(_:)))
-                swipeRight.direction = .right
-                view.addGestureRecognizer(swipeRight)
-                let swipeUp = UISwipeGestureRecognizer(target: self, action: #selector(swipeGestureAction(_:)))
-                swipeUp.direction = .up
-                view.addGestureRecognizer(swipeUp)
-            }
-            #endif
         }
     }
 
-    public func player(layer _: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
+    public func player(layer: KSPlayerLayer, currentTime: TimeInterval, totalTime: TimeInterval) {
         onPlay?(currentTime, totalTime)
         if currentTime >= Double(Int.max) || currentTime <= Double(Int.min) || totalTime >= Double(Int.max) || totalTime <= Double(Int.min) {
             return
@@ -267,6 +297,13 @@ extension KSVideoPlayer.Coordinator: KSPlayerLayerDelegate {
         }
         if timemodel.totalTime != total {
             timemodel.totalTime = total
+        }
+        let playableTime = layer.player.playableTime
+        if playableTime.isFinite, playableTime < Double(Int.max), playableTime > Double(Int.min) {
+            let buffered = Int(playableTime)
+            if timemodel.bufferTime != buffered {
+                timemodel.bufferTime = buffered
+            }
         }
         _ = subtitleModel.subtitle(currentTime: currentTime)
     }
@@ -333,4 +370,6 @@ public class ControllerTimeModel: ObservableObject {
     public var currentTime = 0
     @Published
     public var totalTime = 1
+    @Published
+    public var bufferTime = 0
 }
