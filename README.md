@@ -46,7 +46,7 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 
 ## 🎛️ Three engines, one API
 
-Lumen picks the best engine for the stream and falls back automatically:
+You set the order, and Lumen falls back to the next engine when one fails to open a stream:
 
 | Engine | Backed by | Best at |
 | --- | --- | --- |
