@@ -1,3 +1,5 @@
+name: build
+
 on:
   push:
     branches:
@@ -7,26 +9,23 @@ on:
       - '*'
 
 jobs:
-  buidJob:
-    name: buid
+  build:
+    name: build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-#      https://github.com/actions/runner-images/blob/main/images/macos/macos-13-Readme.md#xcode
       - name: Set up Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
-          xcode-select -p
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
+          swift --version
       - name: Build macOS
         run: swift build
       - name: Build iOS
-        run: swift build --sdk `xcrun -sdk iphonesimulator -show-sdk-path` -Xswiftc -target -Xswiftc x86_64-apple-ios13.0-simulator
+        run: swift build --sdk `xcrun -sdk iphonesimulator -show-sdk-path` -Xswiftc -target -Xswiftc arm64-apple-ios13.0-simulator
       - name: Build tvOS
-        run: swift build --sdk `xcrun -sdk appletvsimulator -show-sdk-path` -Xswiftc -target -Xswiftc x86_64-apple-tvos13.0-simulator
-      - name: Build xrOS
-        run: swift build --sdk `xcrun -sdk xrsimulator -show-sdk-path` -Xswiftc -target -Xswiftc x86_64-apple-xros1.0-simulator
+        run: swift build --sdk `xcrun -sdk appletvsimulator -show-sdk-path` -Xswiftc -target -Xswiftc arm64-apple-tvos13.0-simulator
       - name: Test
         run: swift test -v
