@@ -1,6 +1,6 @@
 //
 //  DisplayModel.swift
-//  Lumen-iOS
+//  Lumen
 //
 //  Created by kintan on 2020/1/11.
 //
@@ -28,10 +28,10 @@ extension DisplayEnum {
         }
     }
 
-    func pipeline(planeCount: Int, bitDepth: Int32) -> MTLRenderPipelineState {
+    func pipeline(planeCount: Int, bitDepth: Int32, isIPT: Bool) -> MTLRenderPipelineState? {
         switch self {
         case .plane:
-            return DisplayEnum.planeDisplay.pipeline(planeCount: planeCount, bitDepth: bitDepth)
+            return DisplayEnum.planeDisplay.pipeline(planeCount: planeCount, bitDepth: bitDepth, isIPT: isIPT)
         case .vr:
             return DisplayEnum.vrDiaplay.pipeline(planeCount: planeCount, bitDepth: bitDepth)
         case .vrBox:
@@ -57,10 +57,12 @@ private class PlaneDisplayModel {
     private lazy var nv12 = MetalRender.makePipelineState(fragmentFunction: "displayNV12Texture")
     private lazy var p010LE = MetalRender.makePipelineState(fragmentFunction: "displayNV12Texture", bitDepth: 10)
     private lazy var bgra = MetalRender.makePipelineState(fragmentFunction: "displayTexture")
+    private lazy var ycc = MetalRender.makePipelineState(fragmentFunction: "displayYCCTexture", bitDepth: 10)
+    private lazy var yccPlanar = MetalRender.makePipelineState(fragmentFunction: "displayYCCPlanarTexture", bitDepth: 10)
     let indexCount: Int
     let indexType = MTLIndexType.uint16
     let primitiveType = MTLPrimitiveType.triangleStrip
-    let indexBuffer: MTLBuffer
+    let indexBuffer: MTLBuffer?
     let posBuffer: MTLBuffer?
     let uvBuffer: MTLBuffer?
 
@@ -68,9 +70,9 @@ private class PlaneDisplayModel {
         let (indices, positions, uvs) = PlaneDisplayModel.genSphere()
         let device = MetalRender.device
         indexCount = indices.count
-        indexBuffer = device.makeBuffer(bytes: indices, length: MemoryLayout<UInt16>.size * indexCount)!
-        posBuffer = device.makeBuffer(bytes: positions, length: MemoryLayout<simd_float4>.size * positions.count)
-        uvBuffer = device.makeBuffer(bytes: uvs, length: MemoryLayout<simd_float2>.size * uvs.count)
+        indexBuffer = device?.makeBuffer(bytes: indices, length: MemoryLayout<UInt16>.size * indexCount)
+        posBuffer = device?.makeBuffer(bytes: positions, length: MemoryLayout<simd_float4>.size * positions.count)
+        uvBuffer = device?.makeBuffer(bytes: uvs, length: MemoryLayout<simd_float2>.size * uvs.count)
     }
 
     private static func genSphere() -> ([UInt16], [simd_float4], [simd_float2]) {
@@ -91,23 +93,26 @@ private class PlaneDisplayModel {
     }
 
     func set(encoder: MTLRenderCommandEncoder) {
+        guard let indexBuffer else {
+            return
+        }
         encoder.setFrontFacing(.clockwise)
         encoder.setVertexBuffer(posBuffer, offset: 0, index: 0)
         encoder.setVertexBuffer(uvBuffer, offset: 0, index: 1)
         encoder.drawIndexedPrimitives(type: primitiveType, indexCount: indexCount, indexType: indexType, indexBuffer: indexBuffer, indexBufferOffset: 0)
     }
 
-    func pipeline(planeCount: Int, bitDepth: Int32) -> MTLRenderPipelineState {
+    func pipeline(planeCount: Int, bitDepth: Int32, isIPT: Bool) -> MTLRenderPipelineState? {
         switch planeCount {
         case 3:
             if bitDepth == 10 {
-                return yuvp010LE
+                return isIPT ? yccPlanar : yuvp010LE
             } else {
                 return yuv
             }
         case 2:
             if bitDepth == 10 {
-                return p010LE
+                return isIPT ? ycc : p010LE
             } else {
                 return nv12
             }
@@ -132,7 +137,7 @@ private class SphereDisplayModel {
     let indexCount: Int
     let indexType = MTLIndexType.uint16
     let primitiveType = MTLPrimitiveType.triangle
-    let indexBuffer: MTLBuffer
+    let indexBuffer: MTLBuffer?
     let posBuffer: MTLBuffer?
     let uvBuffer: MTLBuffer?
     @MainActor
@@ -140,9 +145,9 @@ private class SphereDisplayModel {
         let (indices, positions, uvs) = SphereDisplayModel.genSphere()
         let device = MetalRender.device
         indexCount = indices.count
-        indexBuffer = device.makeBuffer(bytes: indices, length: MemoryLayout<UInt16>.size * indexCount)!
-        posBuffer = device.makeBuffer(bytes: positions, length: MemoryLayout<simd_float4>.size * positions.count)
-        uvBuffer = device.makeBuffer(bytes: uvs, length: MemoryLayout<simd_float2>.size * uvs.count)
+        indexBuffer = device?.makeBuffer(bytes: indices, length: MemoryLayout<UInt16>.size * indexCount)
+        posBuffer = device?.makeBuffer(bytes: positions, length: MemoryLayout<simd_float4>.size * positions.count)
+        uvBuffer = device?.makeBuffer(bytes: uvs, length: MemoryLayout<simd_float2>.size * uvs.count)
         #if canImport(UIKit) && canImport(CoreMotion)
         if KSOptions.enableSensor {
             MotionSensor.shared.start()
@@ -226,7 +231,7 @@ private class SphereDisplayModel {
         return (indices, positions, uvs)
     }
 
-    func pipeline(planeCount: Int, bitDepth: Int32) -> MTLRenderPipelineState {
+    func pipeline(planeCount: Int, bitDepth: Int32) -> MTLRenderPipelineState? {
         switch planeCount {
         case 3:
             if bitDepth == 10 {
@@ -261,10 +266,12 @@ private class VRDisplayModel: SphereDisplayModel {
     }
 
     override func set(encoder: MTLRenderCommandEncoder) {
+        guard let indexBuffer else {
+            return
+        }
         super.set(encoder: encoder)
         var matrix = modelViewProjectionMatrix * modelViewMatrix
-        let matrixBuffer = MetalRender.device.makeBuffer(bytes: &matrix, length: MemoryLayout<simd_float4x4>.size)
-        encoder.setVertexBuffer(matrixBuffer, offset: 0, index: 2)
+        encoder.setVertexBytes(&matrix, length: MemoryLayout<simd_float4x4>.size, index: 2)
         encoder.drawIndexedPrimitives(type: primitiveType, indexCount: indexCount, indexType: indexType, indexBuffer: indexBuffer, indexBufferOffset: 0)
     }
 }
@@ -284,6 +291,9 @@ private class VRBoxDisplayModel: SphereDisplayModel {
     }
 
     override func set(encoder: MTLRenderCommandEncoder) {
+        guard let indexBuffer else {
+            return
+        }
         super.set(encoder: encoder)
         let layerSize = KSOptions.sceneSize
         let width = Double(layerSize.width / 2)
@@ -291,8 +301,7 @@ private class VRBoxDisplayModel: SphereDisplayModel {
          (modelViewProjectionMatrixRight, MTLViewport(originX: width, originY: 0, width: width, height: Double(layerSize.height), znear: 0, zfar: 0))].forEach { modelViewProjectionMatrix, viewport in
             encoder.setViewport(viewport)
             var matrix = modelViewProjectionMatrix * modelViewMatrix
-            let matrixBuffer = MetalRender.device.makeBuffer(bytes: &matrix, length: MemoryLayout<simd_float4x4>.size)
-            encoder.setVertexBuffer(matrixBuffer, offset: 0, index: 2)
+            encoder.setVertexBytes(&matrix, length: MemoryLayout<simd_float4x4>.size, index: 2)
             encoder.drawIndexedPrimitives(type: primitiveType, indexCount: indexCount, indexType: indexType, indexBuffer: indexBuffer, indexBufferOffset: 0)
         }
     }

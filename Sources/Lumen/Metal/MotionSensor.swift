@@ -1,6 +1,6 @@
 //
 //  MotionSensor.swift
-//  Lumen-iOS
+//  Lumen
 //
 //  Created by kintan on 2020/1/13.
 //

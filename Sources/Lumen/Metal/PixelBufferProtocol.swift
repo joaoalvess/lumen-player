@@ -1,6 +1,6 @@
 //
 //  PixelBufferProtocol.swift
-//  Lumen-iOS
+//  Lumen
 //
 //  Created by kintan on 2019/12/31.
 //
@@ -27,6 +27,7 @@ public protocol PixelBufferProtocol: AnyObject {
     var colorPrimaries: CFString? { get set }
     var transferFunction: CFString? { get set }
     var colorspace: CGColorSpace? { get set }
+    var isIPT: Bool { get set }
     var cvPixelBuffer: CVPixelBuffer? { get }
     var isFullRangeVideo: Bool { get }
     func cgImage() -> CGImage?
@@ -38,6 +39,13 @@ public protocol PixelBufferProtocol: AnyObject {
 
 extension PixelBufferProtocol {
     var size: CGSize { CGSize(width: width, height: height) }
+    func applyIPTPQc2Colorimetry() {
+        isIPT = true
+        yCbCrMatrix = kCVImageBufferYCbCrMatrix_ITU_R_2020
+        colorPrimaries = kCVImageBufferColorPrimaries_ITU_R_2020
+        transferFunction = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
+        colorspace = KSOptions.colorSpace(ycbcrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_2020, transferFunction: kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ)
+    }
 }
 
 extension CVPixelBuffer: PixelBufferProtocol {
@@ -78,6 +86,15 @@ extension CVPixelBuffer: PixelBufferProtocol {
 
     public var isFullRangeVideo: Bool {
         CVBufferGetAttachment(self, kCMFormatDescriptionExtension_FullRangeVideo, nil)?.takeUnretainedValue() as? Bool ?? false
+    }
+
+    public var isIPT: Bool {
+        get {
+            CVBufferGetAttachment(self, "LumenIPTContent" as CFString, nil)?.takeUnretainedValue() as? Bool ?? false
+        }
+        set {
+            CVBufferSetAttachment(self, "LumenIPTContent" as CFString, NSNumber(value: newValue), .shouldNotPropagate)
+        }
     }
 
     public var attachmentsDic: CFDictionary? {
@@ -176,6 +193,7 @@ class PixelBuffer: PixelBufferProtocol {
     var transferFunction: CFString?
     var yCbCrMatrix: CFString?
     var colorspace: CGColorSpace?
+    var isIPT: Bool = false
     var formatDescription: CMVideoFormatDescription? = nil
     private let format: AVPixelFormat
     private let formats: [MTLPixelFormat]
@@ -217,29 +235,36 @@ class PixelBuffer: PixelBufferProtocol {
         let bytes = Array(tuple: frame.data)
         let bytesPerRow = Array(tuple: frame.linesize).compactMap { Int($0) }
         for i in 0 ..< planeCount {
-            let alignment = MetalRender.device.minimumLinearTextureAlignment(for: formats[i])
+            let alignment = MetalRender.device?.minimumLinearTextureAlignment(for: formats[i]) ?? 1
             lineSize.append(bytesPerRow[i].alignment(value: alignment))
-            let buffer: MTLBuffer?
             let size = lineSize[i]
             let byteCount = bytesPerRow[i]
             let height = heights[i]
-            if byteCount == size {
-                buffer = MetalRender.device.makeBuffer(bytes: bytes[i]!, length: height * size)
-            } else {
-                buffer = MetalRender.device.makeBuffer(length: heights[i] * lineSize[i])
-                let contents = buffer?.contents()
-                let source = bytes[i]!
-                var j = 0
-                // 性能 while > stride(from:to:by:) > for in
-                while j < height {
-                    contents?.advanced(by: j * size).copyMemory(from: source.advanced(by: j * byteCount), byteCount: byteCount)
-                    j += 1
+            let buffer = MetalBufferPool.shared.makeBuffer(length: height * size)
+            if let contents = buffer?.contents(), let source = bytes[i] {
+                if byteCount == size {
+                    contents.copyMemory(from: source, byteCount: height * size)
+                } else {
+                    var j = 0
+                    // 性能 while > stride(from:to:by:) > for in
+                    while j < height {
+                        contents.advanced(by: j * size).copyMemory(from: source.advanced(by: j * byteCount), byteCount: byteCount)
+                        j += 1
+                    }
                 }
             }
             buffers.append(buffer)
         }
         self.lineSize = lineSize
         self.buffers = buffers
+    }
+
+    deinit {
+        for buffer in buffers {
+            if let buffer {
+                MetalBufferPool.shared.recycle(buffer)
+            }
+        }
     }
 
     func textures() -> [MTLTexture] {
@@ -257,7 +282,11 @@ class PixelBuffer: PixelBufferProtocol {
     func cgImage() -> CGImage? {
         let image: CGImage?
         if format == AV_PIX_FMT_RGB24 {
-            image = CGImage.make(rgbData: buffers[0]!.contents().assumingMemoryBound(to: UInt8.self), linesize: Int(lineSize[0]), width: width, height: height)
+            if let contents = buffers[0]?.contents() {
+                image = CGImage.make(rgbData: contents.assumingMemoryBound(to: UInt8.self), linesize: Int(lineSize[0]), width: width, height: height)
+            } else {
+                image = nil
+            }
         } else {
             let scale = VideoSwresample(isDovi: false)
             image = scale.transfer(format: format, width: Int32(width), height: Int32(height), data: buffers.map { $0?.contents().assumingMemoryBound(to: UInt8.self) }, linesize: lineSize.map { Int32($0) })?.cgImage()
@@ -268,6 +297,33 @@ class PixelBuffer: PixelBufferProtocol {
 
     public func matche(formatDescription: CMVideoFormatDescription) -> Bool {
         self.formatDescription == formatDescription
+    }
+}
+
+final class MetalBufferPool: @unchecked Sendable {
+    static let shared = MetalBufferPool()
+    private let lock = NSLock()
+    private var buffers = [Int: [MTLBuffer]]()
+    private let capacityPerLength = 3
+
+    func makeBuffer(length: Int) -> MTLBuffer? {
+        lock.lock()
+        let buffer = buffers[length]?.popLast()
+        lock.unlock()
+        if let buffer {
+            return buffer
+        }
+        return MetalRender.device?.makeBuffer(length: length)
+    }
+
+    func recycle(_ buffer: MTLBuffer) {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        if buffers[buffer.length, default: []].count < capacityPerLength {
+            buffers[buffer.length, default: []].append(buffer)
+        }
     }
 }
 

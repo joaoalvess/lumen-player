@@ -1,6 +1,6 @@
 //
 //  MetalRender.swift
-//  Lumen-iOS
+//  Lumen
 //
 //  Created by kintan on 2020/1/11.
 //
@@ -12,23 +12,28 @@ import QuartzCore
 import simd
 
 class MetalRender {
-    static let device = MTLCreateSystemDefaultDevice()!
-    static let library: MTLLibrary = {
-        var library: MTLLibrary!
-        library = device.makeDefaultLibrary()
-        if library == nil {
-            library = try? device.makeDefaultLibrary(bundle: .module)
+    #if os(macOS)
+    static let device = MTLCreateSystemDefaultDevice() ?? MTLCopyAllDevices().first
+    #else
+    static let device = MTLCreateSystemDefaultDevice()
+    #endif
+    static let library: MTLLibrary? = {
+        guard let device = MetalRender.device else {
+            return nil
         }
-        return library
+        if let library = device.makeDefaultLibrary() {
+            return library
+        }
+        return try? device.makeDefaultLibrary(bundle: .module)
     }()
 
     private let renderPassDescriptor = MTLRenderPassDescriptor()
-    private let commandQueue = MetalRender.device.makeCommandQueue()
+    private let commandQueue = MetalRender.device?.makeCommandQueue()
     private lazy var samplerState: MTLSamplerState? = {
         let samplerDescriptor = MTLSamplerDescriptor()
         samplerDescriptor.minFilter = .linear
         samplerDescriptor.magFilter = .linear
-        return MetalRender.device.makeSamplerState(descriptor: samplerDescriptor)
+        return MetalRender.device?.makeSamplerState(descriptor: samplerDescriptor)
     }()
 
     private lazy var colorConversion601VideoRangeMatrixBuffer: MTLBuffer? = kvImage_YpCbCrToARGBMatrix_ITU_R_601_4.pointee.videoRange.buffer
@@ -49,28 +54,28 @@ class MetalRender {
 
     private lazy var colorOffsetVideoRangeMatrixBuffer: MTLBuffer? = {
         var firstColumn = SIMD3<Float>(-16.0 / 255.0, -128.0 / 255.0, -128.0 / 255.0)
-        let buffer = MetalRender.device.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<Float>>.size)
+        let buffer = MetalRender.device?.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<Float>>.size)
         buffer?.label = "colorOffset"
         return buffer
     }()
 
     private lazy var colorOffsetFullRangeMatrixBuffer: MTLBuffer? = {
         var firstColumn = SIMD3<Float>(0, -128.0 / 255.0, -128.0 / 255.0)
-        let buffer = MetalRender.device.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<Float>>.size)
+        let buffer = MetalRender.device?.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<Float>>.size)
         buffer?.label = "colorOffset"
         return buffer
     }()
 
     private lazy var leftShiftMatrixBuffer: MTLBuffer? = {
         var firstColumn = SIMD3<UInt8>(1, 1, 1)
-        let buffer = MetalRender.device.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<UInt8>>.size)
+        let buffer = MetalRender.device?.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<UInt8>>.size)
         buffer?.label = "leftShit"
         return buffer
     }()
 
     private lazy var leftShiftSixMatrixBuffer: MTLBuffer? = {
         var firstColumn = SIMD3<UInt8>(64, 64, 64)
-        let buffer = MetalRender.device.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<UInt8>>.size)
+        let buffer = MetalRender.device?.makeBuffer(bytes: &firstColumn, length: MemoryLayout<SIMD3<UInt8>>.size)
         buffer?.label = "leftShit"
         return buffer
     }()
@@ -93,11 +98,14 @@ class MetalRender {
     func draw(pixelBuffer: PixelBufferProtocol, display: DisplayEnum = .plane, drawable: CAMetalDrawable) {
         let inputTextures = pixelBuffer.textures()
         renderPassDescriptor.colorAttachments[0].texture = drawable.texture
-        guard !inputTextures.isEmpty, let commandBuffer = commandQueue?.makeCommandBuffer(), let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+        guard !inputTextures.isEmpty,
+              let state = display.pipeline(planeCount: pixelBuffer.planeCount, bitDepth: pixelBuffer.bitDepth, isIPT: pixelBuffer.isIPT),
+              let commandBuffer = commandQueue?.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
+        else {
             return
         }
         encoder.pushDebugGroup("RenderFrame")
-        let state = display.pipeline(planeCount: pixelBuffer.planeCount, bitDepth: pixelBuffer.bitDepth)
         encoder.setRenderPipelineState(state)
         encoder.setFragmentSamplerState(samplerState, index: 0)
         for (index, texture) in inputTextures.enumerated() {
@@ -109,8 +117,11 @@ class MetalRender {
         encoder.popDebugGroup()
         encoder.endEncoding()
         commandBuffer.present(drawable)
+        commandBuffer.addCompletedHandler { _ in
+            _ = inputTextures
+            _ = pixelBuffer
+        }
         commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
     }
 
     private func setFragmentBuffer(pixelBuffer: PixelBufferProtocol, encoder: MTLRenderCommandEncoder) {
@@ -135,7 +146,10 @@ class MetalRender {
         }
     }
 
-    static func makePipelineState(fragmentFunction: String, isSphere: Bool = false, bitDepth: Int32 = 8) -> MTLRenderPipelineState {
+    static func makePipelineState(fragmentFunction: String, isSphere: Bool = false, bitDepth: Int32 = 8) -> MTLRenderPipelineState? {
+        guard let library = MetalRender.library else {
+            return nil
+        }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.colorAttachments[0].pixelFormat = KSOptions.colorPixelFormat(bitDepth: bitDepth)
         descriptor.vertexFunction = library.makeFunction(name: isSphere ? "mapSphereTexture" : "mapTexture")
@@ -164,7 +178,7 @@ class MetalRender {
             let width = pixelBuffer.widthOfPlane(at: index)
             let height = pixelBuffer.heightOfPlane(at: index)
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: formats[index], width: width, height: height, mipmapped: false)
-            return device.makeTexture(descriptor: descriptor, iosurface: iosurface, plane: index)
+            return device?.makeTexture(descriptor: descriptor, iosurface: iosurface, plane: index)
         }
     }
 
@@ -205,7 +219,7 @@ extension vImage_YpCbCrToARGBMatrix {
 
     var buffer: MTLBuffer? {
         var matrix = simd_float3x3([Yp, Yp, Yp], [0.0, Cb_G, Cb_B], [Cr_R, Cr_G, 0.0])
-        let buffer = MetalRender.device.makeBuffer(bytes: &matrix, length: MemoryLayout<simd_float3x3>.size)
+        let buffer = MetalRender.device?.makeBuffer(bytes: &matrix, length: MemoryLayout<simd_float3x3>.size)
         buffer?.label = "colorConversionMatrix"
         return buffer
     }
