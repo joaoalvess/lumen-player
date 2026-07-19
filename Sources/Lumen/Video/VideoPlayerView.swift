@@ -105,6 +105,8 @@ open class VideoPlayerView: PlayerView {
 
     private var originalPlaybackRate: Float = 1.0
 
+    public static let playbackRateOptions: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
+
     public let speedTipLabel: UILabel = {
         let label = UILabel()
         label.textAlignment = .center
@@ -507,7 +509,7 @@ extension VideoPlayerView {
                 self.playerLayer?.player.select(track: value)
             }
         }
-        toolBar.playbackRateButton.setMenu(title: NSLocalizedString("speed", comment: ""), current: playerLayer?.player.playbackRate ?? 1, list: [0.75, 1.0, 1.25, 1.5, 2.0]) { value in
+        toolBar.playbackRateButton.setMenu(title: NSLocalizedString("speed", comment: ""), current: playerLayer?.player.playbackRate ?? 1, list: Self.playbackRateOptions) { value in
             "\(value) x"
         } completition: { [weak self] value in
             guard let self else { return }
@@ -535,101 +537,83 @@ extension VideoPlayerView {
 // MARK: - playback rate, definitions, audio and video tracks change
 
 public extension VideoPlayerView {
-    private func changeAudioVideo(_ type: PlayerButtonType, button _: UIButton) {
-        guard let tracks = playerLayer?.player.tracks(mediaType: type == .audioSwitch ? .audio : .video) else {
-            return
-        }
-        let alertController = UIAlertController(title: NSLocalizedString(type == .audioSwitch ? "switch audio" : "switch video", comment: ""), message: nil, preferredStyle: preferredStyle())
-        for track in tracks {
-            let isEnabled = track.isEnabled
-            var title = track.name
-            if type == .videoSwitch {
-                title += " \(track.naturalSize.width)x\(track.naturalSize.height)"
-            }
-            let action = UIAlertAction(title: title, style: .default) { [weak self] _ in
-                guard let self, !isEnabled else { return }
-                self.playerLayer?.player.select(track: track)
+    private func presentSelectionAlert<Item>(title: String, items: [Item], itemTitle: (Item) -> String, isSelected: (Item) -> Bool, handler: @escaping (Item) -> Void) {
+        let alertController = UIAlertController(title: title, message: nil, preferredStyle: preferredStyle())
+        for item in items {
+            let action = UIAlertAction(title: itemTitle(item), style: .default) { _ in
+                handler(item)
             }
             alertController.addAction(action)
-            if isEnabled {
-                alertController.preferredAction = action
-                action.setValue(isEnabled, forKey: "checked")
-            }
-        }
-        alertController.addAction(UIAlertAction(title: NSLocalizedString("cancel", comment: ""), style: .cancel, handler: nil))
-        viewController?.present(alertController, animated: true, completion: nil)
-    }
-
-    private func changeDefinitions(button _: UIButton) {
-        guard let resource, resource.definitions.count > 1 else { return }
-        let alertController = UIAlertController(title: NSLocalizedString("select video quality", comment: ""), message: nil, preferredStyle: preferredStyle())
-        for (index, definition) in resource.definitions.enumerated() {
-            let action = UIAlertAction(title: definition.definition, style: .default) { [weak self] _ in
-                guard let self, index != self.currentDefinition else { return }
-                self.change(definitionIndex: index)
-            }
-            alertController.addAction(action)
-            if index == currentDefinition {
+            if isSelected(item) {
                 alertController.preferredAction = action
                 action.setValue(true, forKey: "checked")
             }
         }
         alertController.addAction(UIAlertAction(title: NSLocalizedString("cancel", comment: ""), style: .cancel, handler: nil))
         viewController?.present(alertController, animated: true, completion: nil)
+    }
+
+    private func changeAudioVideo(_ type: PlayerButtonType, button _: UIButton) {
+        guard let tracks = playerLayer?.player.tracks(mediaType: type == .audioSwitch ? .audio : .video) else {
+            return
+        }
+        presentSelectionAlert(title: NSLocalizedString(type == .audioSwitch ? "switch audio" : "switch video", comment: ""), items: tracks) { track in
+            var title = track.name
+            if type == .videoSwitch {
+                title += " \(track.naturalSize.width)x\(track.naturalSize.height)"
+            }
+            return title
+        } isSelected: { track in
+            track.isEnabled
+        } handler: { [weak self] track in
+            guard let self, !track.isEnabled else { return }
+            self.playerLayer?.player.select(track: track)
+        }
+    }
+
+    private func changeDefinitions(button _: UIButton) {
+        guard let resource, resource.definitions.count > 1 else { return }
+        presentSelectionAlert(title: NSLocalizedString("select video quality", comment: ""), items: Array(resource.definitions.enumerated())) { item in
+            item.element.definition
+        } isSelected: { item in
+            item.offset == currentDefinition
+        } handler: { [weak self] item in
+            guard let self, item.offset != self.currentDefinition else { return }
+            self.change(definitionIndex: item.offset)
+        }
     }
 
     private func changeSrt(button _: UIButton) {
         let availableSubtitles = srtControl.subtitleInfos
         guard !availableSubtitles.isEmpty else { return }
-
-        let alertController = UIAlertController(title: NSLocalizedString("subtitle", comment: ""),
-                                                message: nil,
-                                                preferredStyle: preferredStyle())
-
         let currentSub = srtControl.selectedSubtitleInfo
-
-        let disableAction = UIAlertAction(title: NSLocalizedString("Disabled", comment: ""), style: .default) { [weak self] _ in
-            self?.srtControl.selectedSubtitleInfo = nil
-        }
-        alertController.addAction(disableAction)
-        if currentSub == nil {
-            alertController.preferredAction = disableAction
-            disableAction.setValue(true, forKey: "checked")
-        }
-
-        for (_, srt) in availableSubtitles.enumerated() {
-            let action = UIAlertAction(title: srt.name, style: .default) { [weak self] _ in
-                self?.srtControl.selectedSubtitleInfo = srt
+        var items: [(any SubtitleInfo)?] = [nil]
+        items.append(contentsOf: availableSubtitles)
+        presentSelectionAlert(title: NSLocalizedString("subtitle", comment: ""), items: items) { item in
+            if let item {
+                return item.name
             }
-            alertController.addAction(action)
-            if currentSub?.subtitleID == srt.subtitleID {
-                alertController.preferredAction = action
-                action.setValue(true, forKey: "checked")
+            return NSLocalizedString("Disabled", comment: "")
+        } isSelected: { item in
+            if let item {
+                return currentSub?.subtitleID == item.subtitleID
             }
+            return currentSub == nil
+        } handler: { [weak self] item in
+            self?.srtControl.selectedSubtitleInfo = item
         }
-
-        alertController.addAction(UIAlertAction(title: NSLocalizedString("cancel", comment: ""), style: .cancel, handler: nil))
-        viewController?.present(alertController, animated: true, completion: nil)
     }
 
     private func changePlaybackRate(button: UIButton) {
-        let alertController = UIAlertController(title: NSLocalizedString("select speed", comment: ""), message: nil, preferredStyle: preferredStyle())
-        for rate in [0.75, 1.0, 1.25, 1.5, 2.0] {
-            let title = "\(rate) x"
-            let action = UIAlertAction(title: title, style: .default) { [weak self] _ in
-                guard let self else { return }
-                button.setTitle(title, for: .normal)
-                self.playerLayer?.player.playbackRate = Float(rate)
-            }
-            alertController.addAction(action)
-
-            if Float(rate) == playerLayer?.player.playbackRate {
-                alertController.preferredAction = action
-                action.setValue(true, forKey: "checked")
-            }
+        presentSelectionAlert(title: NSLocalizedString("select speed", comment: ""), items: Self.playbackRateOptions) { rate in
+            "\(rate) x"
+        } isSelected: { rate in
+            rate == playerLayer?.player.playbackRate
+        } handler: { [weak self] rate in
+            guard let self else { return }
+            button.setTitle("\(rate) x", for: .normal)
+            self.playerLayer?.player.playbackRate = rate
         }
-        alertController.addAction(UIAlertAction(title: NSLocalizedString("cancel", comment: ""), style: .cancel, handler: nil))
-        viewController?.present(alertController, animated: true, completion: nil)
     }
 }
 

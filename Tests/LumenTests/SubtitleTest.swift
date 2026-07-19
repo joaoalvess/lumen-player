@@ -99,4 +99,52 @@ class SubtitleTest: XCTestCase {
         let parts = parse.parse(scanner: scanner)
         XCTAssertEqual(parts.count, 7)
     }
+
+    func testAssFontScale() {
+        XCTAssertEqual(AssParse.fontScale(playResY: 288, preferredSize: 58), 58.0 / 16.0, accuracy: 0.0001)
+        XCTAssertEqual(AssParse.fontScale(playResY: 720, preferredSize: 58), (58.0 / 16.0) * (288.0 / 720.0), accuracy: 0.0001)
+        XCTAssertEqual(AssParse.fontScale(playResY: 0, preferredSize: 58), 58.0 / 16.0, accuracy: 0.0001)
+        XCTAssertEqual(AssParse.fontScale(playResY: -10, preferredSize: 58), 58.0 / 16.0, accuracy: 0.0001)
+    }
+
+    func testAssStyleFontScaledByPlayRes() throws {
+        let string = """
+        [Script Info]
+        PlayResX: 384
+        PlayResY: 288
+
+        [V4+ Styles]
+        Format: Name, Fontname, Fontsize
+        Style: Default,Arial,16
+
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Hello
+
+        """
+        let scanner = Scanner(string: string)
+        let parse = AssParse()
+        XCTAssertEqual(parse.canParse(scanner: scanner), true)
+        let parts = parse.parse(scanner: scanner)
+        XCTAssertEqual(parts.count, 1)
+        let text = try XCTUnwrap(parts[0].text)
+        let font = try XCTUnwrap(text.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(font.pointSize, SubtitleModel.textFontSize, accuracy: 0.01)
+    }
+
+    func testSrtKeepsPerRunFontEmpty() throws {
+        let string = """
+        1
+        00:00:00,050 --> 00:00:01,000
+        Hello
+
+        """
+        let scanner = Scanner(string: string)
+        let parse = SrtParse()
+        XCTAssertEqual(parse.canParse(scanner: scanner), true)
+        let parts = parse.parse(scanner: scanner)
+        XCTAssertEqual(parts.count, 1)
+        let text = try XCTUnwrap(parts[0].text)
+        XCTAssertNil(text.attribute(.font, at: 0, effectiveRange: nil))
+    }
 }

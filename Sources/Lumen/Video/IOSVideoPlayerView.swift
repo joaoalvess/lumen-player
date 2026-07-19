@@ -373,11 +373,11 @@ extension IOSVideoPlayerView {
         true
     }
 
-    override open func canPerformAction(_ action: Selector, withSender _: Any?) -> Bool {
+    override open func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(IOSVideoPlayerView.openFileAction) {
             return true
         }
-        return true
+        return super.canPerformAction(action, withSender: sender)
     }
 
     @objc fileprivate func openFileAction(_: AnyObject) {

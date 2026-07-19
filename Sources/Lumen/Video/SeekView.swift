@@ -1,6 +1,6 @@
 //
 //  SeekView.swift
-//  Lumen-iOS
+//  Lumen
 //
 //  Created by kintan on 2018/11/14.
 //
