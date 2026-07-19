@@ -175,10 +175,13 @@ public extension KSSubtitle {
 
     func parse(data: Data, encoding: String.Encoding? = nil) throws {
         var string: String?
-        let encodes = [encoding ?? String.Encoding.utf8,
+        var encodes = [encoding ?? String.Encoding.utf8,
                        String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.big5.rawValue))),
-                       String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))),
-                       String.Encoding.unicode]
+                       String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))]
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            encodes.append(String.Encoding.unicode)
+        }
+        encodes.append(String.Encoding.windowsCP1252)
         for encode in encodes {
             string = String(data: data, encoding: encode)
             if string != nil {
@@ -346,8 +349,11 @@ open class SubtitleModel: ObservableObject {
         if newParts != parts {
             for part in newParts {
                 if let text = part.text as? NSMutableAttributedString {
-                    text.addAttributes([.font: SubtitleModel.textFont],
-                                       range: NSRange(location: 0, length: text.length))
+                    text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+                        if value == nil {
+                            text.addAttribute(.font, value: SubtitleModel.textFont, range: range)
+                        }
+                    }
                 }
             }
             parts = newParts

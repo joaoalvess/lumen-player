@@ -1,6 +1,6 @@
 //
 //  SubtitleDataSouce.swift
-//  Lumen-7de52535
+//  Lumen
 //
 //  Created by kintan on 2018/8/7.
 //

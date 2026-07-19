@@ -1,6 +1,6 @@
 //
 //  KSParseProtocol.swift
-//  Lumen-7de52535
+//  Lumen
 //
 //  Created by kintan on 2018/8/7.
 //
@@ -20,8 +20,6 @@ public extension KSOptions {
     static var subtitleParses: [KSParseProtocol] = [AssParse(), VTTParse(), SrtParse()]
 }
 
-public extension String {}
-
 public extension KSParseProtocol {
     func parse(scanner: Scanner) -> [SubtitlePart] {
         var groups = [SubtitlePart]()
@@ -37,14 +35,26 @@ public extension KSParseProtocol {
 }
 
 public class AssParse: KSParseProtocol {
+    private static let defaultEventKeys = ["Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect", "Text"]
     private var styleMap = [String: ASSStyle]()
-    private var eventKeys = ["Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect", "Text"]
+    private var eventKeys = AssParse.defaultEventKeys
     private var playResX = Float(0.0)
     private var playResY = Float(0.0)
+    private var fontScale = CGFloat(1)
+
+    static func fontScale(playResY: CGFloat, preferredSize: CGFloat) -> CGFloat {
+        let resY = playResY.isFinite && playResY > 0 ? playResY : 288
+        return (preferredSize / 16) * (288 / resY)
+    }
+
     public func canParse(scanner: Scanner) -> Bool {
         guard scanner.scanString("[Script Info]") != nil else {
             return false
         }
+        styleMap.removeAll()
+        eventKeys = AssParse.defaultEventKeys
+        playResX = 0
+        playResY = 0
         while scanner.scanString("Format:") == nil {
             if scanner.scanString("PlayResX:") != nil {
                 playResX = scanner.scanFloat() ?? 0
@@ -54,6 +64,7 @@ public class AssParse: KSParseProtocol {
                 _ = scanner.scanUpToCharacters(from: .newlines)
             }
         }
+        fontScale = Self.fontScale(playResY: CGFloat(playResY), preferredSize: SubtitleModel.textFontSize)
         guard var keys = scanner.scanUpToCharacters(from: .newlines)?.components(separatedBy: ",") else {
             return false
         }
@@ -64,10 +75,10 @@ public class AssParse: KSParseProtocol {
                 continue
             }
             var dic = [String: String]()
-            for i in 1 ..< keys.count {
+            for i in 1 ..< min(keys.count, values.count) {
                 dic[keys[i]] = values[i]
             }
-            styleMap[values[0]] = dic.parseASSStyle()
+            styleMap[values[0]] = dic.parseASSStyle(fontScale: fontScale)
         }
         _ = scanner.scanString("[Events]")
         if scanner.scanString("Format: ") != nil {
@@ -131,7 +142,7 @@ public class AssParse: KSParseProtocol {
         }
         text = text.replacingOccurrences(of: "\\N", with: "\n")
         text = text.replacingOccurrences(of: "\\n", with: "\n")
-        let part = SubtitlePart(start, end, attributedString: text.build(textPosition: &textPosition, attributed: attributes))
+        let part = SubtitlePart(start, end, attributedString: text.build(textPosition: &textPosition, attributed: attributes, fontScale: fontScale))
         part.textPosition = textPosition
         return part
     }
@@ -144,12 +155,12 @@ public struct ASSStyle {
 
 // swiftlint:disable cyclomatic_complexity
 extension String {
-    func build(textPosition: inout TextPosition, attributed: [NSAttributedString.Key: Any]? = nil) -> NSAttributedString {
+    func build(textPosition: inout TextPosition, attributed: [NSAttributedString.Key: Any]? = nil, fontScale: CGFloat = 1) -> NSAttributedString {
         let lineCodes = splitStyle()
         let attributedStr = NSMutableAttributedString()
         var attributed = attributed ?? [:]
         for lineCode in lineCodes {
-            attributedStr.append(lineCode.0.parseStyle(attributes: &attributed, style: lineCode.1, textPosition: &textPosition))
+            attributedStr.append(lineCode.0.parseStyle(attributes: &attributed, style: lineCode.1, textPosition: &textPosition, fontScale: fontScale))
         }
         return attributedStr
     }
@@ -172,7 +183,7 @@ extension String {
         return result
     }
 
-    func parseStyle(attributes: inout [NSAttributedString.Key: Any], style: String?, textPosition: inout TextPosition) -> NSAttributedString {
+    func parseStyle(attributes: inout [NSAttributedString.Key: Any], style: String?, textPosition: inout TextPosition, fontScale: CGFloat = 1) -> NSAttributedString {
         guard let style else {
             return NSAttributedString(string: self, attributes: attributes)
         }
@@ -193,6 +204,9 @@ extension String {
             case "b":
                 attributes[.expansion] = scanner.scanFloat()
             case "c":
+                if itemStr.hasPrefix("clip") {
+                    break
+                }
                 attributes[.foregroundColor] = scanner.scanUpToCharacters(from: .newlines).flatMap(UIColor.init(assColor:))
             case "f":
                 let char = scanner.scanCharacter()
@@ -239,7 +253,9 @@ extension String {
         }
         // Apply font attributes if available
         if let fontName, let fontSize {
-            let font = UIFont(name: fontName, size: CGFloat(fontSize)) ?? UIFont.systemFont(ofSize: CGFloat(fontSize))
+            let resolvedName = EmbeddedFontRegistry.shared.fontName(for: fontName) ?? fontName
+            let scaledSize = CGFloat(fontSize) * fontScale
+            let font = UIFont(name: resolvedName, size: scaledSize) ?? UIFont.systemFont(ofSize: scaledSize)
             attributes[.font] = font
         }
         return NSAttributedString(string: self, attributes: attributes)
@@ -247,10 +263,12 @@ extension String {
 }
 
 public extension [String: String] {
-    func parseASSStyle() -> ASSStyle {
+    func parseASSStyle(fontScale: CGFloat = 1) -> ASSStyle {
         var attributes: [NSAttributedString.Key: Any] = [:]
         if let fontName = self["Fontname"], let fontSize = self["Fontsize"].flatMap(Double.init) {
-            var font = UIFont(name: fontName, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize)
+            let resolvedName = EmbeddedFontRegistry.shared.fontName(for: fontName) ?? fontName
+            let scaledSize = fontSize * Double(fontScale)
+            var font = UIFont(name: resolvedName, size: scaledSize) ?? UIFont.systemFont(ofSize: scaledSize)
             if let degrees = self["Angle"].flatMap(Double.init), degrees != 0 {
                 let radians = CGFloat(degrees * .pi / 180.0)
                 #if !canImport(UIKit)
@@ -258,8 +276,8 @@ public extension [String: String] {
                 #else
                 let matrix = CGAffineTransform(rotationAngle: radians)
                 #endif
-                let fontDescriptor = UIFontDescriptor(name: fontName, matrix: matrix)
-                font = UIFont(descriptor: fontDescriptor, size: fontSize) ?? font
+                let fontDescriptor = UIFontDescriptor(name: resolvedName, matrix: matrix)
+                font = UIFont(descriptor: fontDescriptor, size: scaledSize) ?? font
             }
             attributes[.font] = font
         }
@@ -329,6 +347,23 @@ public extension [String: String] {
     // swiftlint:enable cyclomatic_complexity
 }
 
+private extension Scanner {
+    func scanCueTextLines() -> String {
+        var text = ""
+        var newLine: String? = nil
+        repeat {
+            if let str = scanUpToCharacters(from: .newlines) {
+                text += str
+            }
+            newLine = scanCharacters(from: .newlines)
+            if newLine == "\n" || newLine == "\r\n" {
+                text += "\n"
+            }
+        } while newLine == "\n" || newLine == "\r\n"
+        return text
+    }
+}
+
 public class VTTParse: KSParseProtocol {
     public func canParse(scanner: Scanner) -> Bool {
         let result = scanner.scanString("WEBVTT")
@@ -358,17 +393,7 @@ public class VTTParse: KSParseProtocol {
             let startString = timeArray[0]
             let endString = timeArray[1]
             _ = scanner.scanCharacters(from: .newlines)
-            var text = ""
-            var newLine: String? = nil
-            repeat {
-                if let str = scanner.scanUpToCharacters(from: .newlines) {
-                    text += str
-                }
-                newLine = scanner.scanCharacters(from: .newlines)
-                if newLine == "\n" || newLine == "\r\n" {
-                    text += "\n"
-                }
-            } while newLine == "\n" || newLine == "\r\n"
+            let text = scanner.scanCueTextLines()
             var textPosition = TextPosition()
             return SubtitlePart(startString.parseDuration(), endString.parseDuration(), attributedString: text.build(textPosition: &textPosition))
         }
@@ -395,7 +420,7 @@ public class SrtParse: KSParseProtocol {
         repeat {
             decimal = scanner.scanUpToCharacters(from: .newlines)
             _ = scanner.scanCharacters(from: .newlines)
-        } while decimal.flatMap(Int.init) == nil
+        } while decimal.flatMap(Int.init) == nil && !scanner.isAtEnd
         let startString = scanner.scanUpToString("-->")
         // skip spaces and newlines by default.
         _ = scanner.scanString("-->")
@@ -403,17 +428,7 @@ public class SrtParse: KSParseProtocol {
            let endString = scanner.scanUpToCharacters(from: .newlines)
         {
             _ = scanner.scanCharacters(from: .newlines)
-            var text = ""
-            var newLine: String? = nil
-            repeat {
-                if let str = scanner.scanUpToCharacters(from: .newlines) {
-                    text += str
-                }
-                newLine = scanner.scanCharacters(from: .newlines)
-                if newLine == "\n" || newLine == "\r\n" {
-                    text += "\n"
-                }
-            } while newLine == "\n" || newLine == "\r\n"
+            let text = scanner.scanCueTextLines()
             var textPosition = TextPosition()
             return SubtitlePart(startString.parseDuration(), endString.parseDuration(), attributedString: text.build(textPosition: &textPosition))
         }
