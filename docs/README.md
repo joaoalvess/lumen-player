@@ -15,6 +15,7 @@ Documentação técnica do Lumen, fork GPL do KSPlayer. Cada documento cobre um 
 | 06 | [06-render-de-v-deo-e-hdr.md](06-render-de-v-deo-e-hdr.md) | Render: `AVSampleBufferDisplayLayer` vs pipeline Metal próprio, shaders YUV→RGB, EDR/HDR, projeções 360° e frame rate/HDR matching do tvOS (`AVDisplayCriteria`) |
 | 07 | [07-legendas.md](07-legendas.md) | Legendas: parsers SRT/VTT/ASS, `SubtitleModel`, trilhas embutidas (`SubtitleDecode`, texto e bitmap), fontes online (Shooter/Assrt/OpenSubtitles), fontes tipográficas embutidas em MKV (`EmbeddedFontRegistry`) e exibição |
 | 08 | [08-ui-e-views.md](08-ui-e-views.md) | As duas UIs paralelas: UIKit/AppKit clássica (`VideoPlayerView`) e SwiftUI (`KSVideoPlayerView`), mais a camada dedicada de tvOS em `SwiftUI/TVOS/` (transport bar, scrubber, painéis, thumbnails) |
+| 09 | [09-fronteiras-e-reescrita.md](09-fronteiras-e-reescrita.md) | O que será reescrito, o contrato que sobrevive (`MediaPlayerProtocol`, `KSPlayerLayer`) e as regras para que features novas não gerem retrabalho |
 
 ## Panorama de capacidades
 
