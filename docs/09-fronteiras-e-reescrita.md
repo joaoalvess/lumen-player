@@ -42,4 +42,4 @@ A fronteira não é aspiracional: hoje a UI tvOS referencia `playerLayer` 18 vez
 
 Acoplamentos aceitos de propósito, a revisitar quando o núcleo for substituído:
 
-- `StreamHubApp.swift` (app consumidor) referencia `ProAVPlayer.self` e `KSMEPlayer.self` para registrar a ordem de engines. É o acoplamento mínimo inevitável de quem escolhe o engine; se a reescrita mudar os nomes, são duas linhas.
+- O app consumidor referencia `ProAVPlayer.self` e `KSMEPlayer.self` no seu ponto de entrada para registrar a ordem de engines. É o acoplamento mínimo inevitável de quem escolhe o engine; se a reescrita mudar os nomes, são duas linhas.

@@ -22,21 +22,24 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 ## ✨ Features
 
 **Picture & sound**
-- 🎞️ Native **Dolby Vision** and **Dolby Atmos** — passed through to the system, not tone-mapped away
+- 🎞️ Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
+- 🔉 E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. Atmos rides along in the E-AC-3 stream, though the playlist doesn't yet emit the `dec3` complexity signaling — the code marks that as pending
+- 🎛️ TrueHD and DTS are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone
 - 📼 MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
-- 🎚️ Hardware decoding with software fallback, 4K/8K, high frame rate
-- 🔊 Multichannel and spatial audio, with TrueHD/DTS transcoded losslessly when passthrough isn't available
+- 🎚️ The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
+- 📶 On tvOS, frame rate and dynamic range are handed to the display through `AVDisplayCriteria` — so the TV can switch mode to match the content, when the viewer has Match Content enabled
+- 🔊 Multichannel output on five interchangeable audio backends, swappable via `KSOptions.audioPlayerType`; `AudioRendererPlayer` is the one that enables system spatialization
 
 **Interface**
 - 📺 A full tvOS player UI — transport bar, info panels, track popover, content tabs
 - 🖼️ **Scrub previews** — live thumbnails while you seek, decoded on a dedicated engine
 - 🎯 Focus model built for the remote from the start, not adapted from touch
-- 🪟 Picture in Picture, with subtitles
+- 🪟 Picture in Picture — subtitles are a SwiftUI overlay, so they stay in the app window and don't follow the PiP layer
 
 **Streaming**
 - 💾 Byte-range **disk cache** backed by `URLSession` — feeds FFmpeg through a custom AVIO context and `AVPlayer` through a resource loader
-- ⚡ Fast seeking inside cached ranges, with precaching ahead of playback
-- 🌐 Network I/O stays in Swift, so TLS and connection handling use the system stack
+- ⚡ Fast seeking inside cached ranges — a seek that lands on cached bytes costs no round trip. The cache fills on demand and never fetches less than 1 MB at a time; there is no background precaching ahead of the playhead
+- 🌐 Opt-in: set `diskCacheDirectory` and HTTP(S) reads go through `URLSession` instead of FFmpeg's network layer. URLs ending in `.m3u8`/`.m3u` are excluded, and scrub thumbnails always open through FFmpeg's own stack
 
 **Subtitles**
 - 🔤 ASS/SSA, SRT and WebVTT parsed and rendered natively, with positioning and styling
@@ -46,7 +49,7 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 
 ## 🎛️ Three engines, one API
 
-You set the order, and Lumen falls back to the next engine when one fails to open a stream:
+You pick a first and a second engine. When the first one reports an error — opening the stream or during playback — Lumen shuts it down and restarts on the second. There are two slots, not a three-deep chain: once the second engine fails, playback goes to `.error`.
 
 | Engine | Backed by | Best at |
 | --- | --- | --- |
@@ -59,27 +62,52 @@ KSOptions.firstPlayerType = ProAVPlayer.self
 KSOptions.secondPlayerType = KSMEPlayer.self
 ```
 
+Two cases override your first choice: AirPlay forces `KSAVPlayer`, and any non-plane display mode forces `KSMEPlayer`.
+
 ## 📦 Requirements
 
-- tvOS 13+ · iOS/iPadOS 13+ · macOS 10.15+ · Mac Catalyst 14+
+There are two floors, and they are not the same one:
+
+| | Minimum |
+| --- | --- |
+| Package manifest — the headless core, `ProAVPlayer`, the disk cache | tvOS 13 · iOS 13 · macOS 10.15 · Mac Catalyst 14 |
+| `KSVideoPlayerView` and the whole tvOS interface | tvOS 16 · iOS 16 · macOS 13 |
+
+`Package.swift` declares the lower floor because the engines and the cache carry no type-level availability annotations. The SwiftUI entry point does: if you use `KSVideoPlayerView` — and on tvOS that is the point — the real minimum is 16.
+
+Scrub thumbnails are tvOS-only, at any version.
+
 - Swift 5.9+ / Xcode 15+
 
 ## 🚀 Installation
 
-Add Lumen as a local Swift package:
+Add Lumen as a remote Swift package. There are no tagged releases yet, so depend on the branch:
 
 ```swift
 dependencies: [
-    .package(path: "Player")
+    .package(url: "https://github.com/joaoalvess/lumen-player.git", branch: "main")
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
-        .product(name: "Lumen", package: "Lumen")
+        .product(name: "Lumen", package: "lumen-player")
     ])
 ]
 ```
 
-In Xcode: **File → Add Package Dependencies → Add Local**, then point at the checkout.
+In Xcode: **File → Add Package Dependencies**, paste the URL, and choose the `main` branch.
+
+To work against a local checkout instead, note that a path dependency takes its identity from the **directory name**, so `package:` must match the folder — not the package's `name`:
+
+```swift
+dependencies: [
+    .package(path: "../lumen-player")
+],
+targets: [
+    .target(name: "YourApp", dependencies: [
+        .product(name: "Lumen", package: "lumen-player")
+    ])
+]
+```
 
 ## 🎬 Usage
 
@@ -138,12 +166,15 @@ KSVideoPlayerView(coordinator: coordinator, url: url, options: options)
 
 | Path | Responsibility |
 | --- | --- |
-| `Sources/Lumen/MEPlayer/` | Demux, decode, A/V sync — the FFmpeg engine, `ProAVPlayer` and the remux session |
-| `Sources/Lumen/AVPlayer/` | `KSPlayerLayer`, options, player protocols, PiP |
-| `Sources/Lumen/Cache/` | Byte cache, `URLSession` reader, AVIO bridge |
+| `Sources/Lumen/MEPlayer/` | Demux, decode, A/V sync — the FFmpeg engine, `ProAVPlayer` and the remux session, the audio output backends, the AVIO bridge and the scrub-thumbnail engine |
+| `Sources/Lumen/AVPlayer/` | `KSPlayerLayer`, options, player protocols, PiP, the `AVPlayer` resource loader |
+| `Sources/Lumen/Cache/` | The byte cache itself — range bookkeeping on disk and the `URLSession` reader |
 | `Sources/Lumen/SwiftUI/TVOS/` | The tvOS interface — transport bar, panels, scrubber, glass styles |
 | `Sources/Lumen/Subtitle/` | Parsing, rendering, embedded fonts |
 | `Sources/Lumen/Metal/` | Shaders and pixel-buffer rendering |
+| `Sources/Lumen/Core/` | Cross-platform shims (UIKit/AppKit/Foundation extensions), the base UIKit `PlayerView` and toolbar, M3U parsing, media export |
+| `Sources/Lumen/Video/` | The legacy UIKit/AppKit player interface — `VideoPlayerView`, fullscreen transitions, gestures, `KSPlayerResource` |
+| `Sources/Lumen/Audio/` | `AudioPlayerView`, the audio-only UIKit view. The audio *pipeline* lives in `MEPlayer/` |
 
 ## 🗺️ Roadmap
 
