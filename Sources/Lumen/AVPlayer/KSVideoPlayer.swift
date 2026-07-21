@@ -44,7 +44,7 @@ extension KSVideoPlayer: UIViewRepresentable {
 
     // iOS tvOS真机先调用onDisappear在调用dismantleUIView，但是模拟器就反过来了。
     public static func dismantleUIView(_: UIViewType, coordinator: Coordinator) {
-        coordinator.resetPlayer()
+        coordinator.resetPlayerIfViewDetached()
     }
     #else
     public typealias NSViewType = UIView
@@ -58,7 +58,7 @@ extension KSVideoPlayer: UIViewRepresentable {
 
     // macOS先调用onDisappear在调用dismantleNSView
     public static func dismantleNSView(_ view: NSViewType, coordinator: Coordinator) {
-        coordinator.resetPlayer()
+        coordinator.resetPlayerIfViewDetached()
         view.window?.aspectRatio = CGSize(width: 16, height: 9)
     }
     #endif
@@ -129,6 +129,8 @@ extension KSVideoPlayer: UIViewRepresentable {
             }
         }
 
+        private var lastPlayURL: URL?
+        private var lastPlayTime = TimeInterval(0)
         private var delayHide: DispatchWorkItem?
         private var isMaskPinned = false
         public var onPlay: ((TimeInterval, TimeInterval) -> Void)?
@@ -174,6 +176,9 @@ extension KSVideoPlayer: UIViewRepresentable {
                     view = playerLayer.player.view ?? UIView()
                 }
             } else {
+                if lastPlayURL == url, lastPlayTime > 0 {
+                    options.startPlayTime = lastPlayTime
+                }
                 let playerLayer = KSPlayerLayer(url: url, options: options, delegate: self)
                 self.playerLayer = playerLayer
                 view = playerLayer.player.view ?? UIView()
@@ -182,6 +187,14 @@ extension KSVideoPlayer: UIViewRepresentable {
             addSwipeGestures(to: view)
             #endif
             return view
+        }
+
+        public func resetPlayerIfViewDetached() {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.playerLayer?.player.view?.window == nil else { return }
+                self.resetPlayer()
+            }
         }
 
         public func resetPlayer() {
@@ -289,6 +302,10 @@ extension KSVideoPlayer.Coordinator: KSPlayerLayerDelegate {
         onPlay?(currentTime, totalTime)
         if currentTime >= Double(Int.max) || currentTime <= Double(Int.min) || totalTime >= Double(Int.max) || totalTime <= Double(Int.min) {
             return
+        }
+        if currentTime > 0 {
+            lastPlayURL = layer.url
+            lastPlayTime = currentTime
         }
         let current = Int(currentTime)
         let total = Int(max(0, totalTime))
