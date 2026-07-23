@@ -161,7 +161,7 @@ open class KSPlayerLayer: NSObject {
     public private(set) var state = KSPlayerState.initialized {
         willSet {
             if state != newValue {
-                runOnMainThread { [weak self] in
+                DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     KSLog("playerStateDidChange - \(newValue)")
                     self.delegate?.player(layer: self, state: newValue)
