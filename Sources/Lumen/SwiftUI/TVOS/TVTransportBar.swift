@@ -86,9 +86,9 @@ struct TVTransportBar: View {
 
     private func track(width: CGFloat, playheadX: CGFloat) -> some View {
         ZStack(alignment: .leading) {
-            Capsule()
-                .fill(.white.opacity(0.18))
+            Color.clear
                 .frame(height: trackHeight)
+                .tvPlayerControlMaterial(in: Capsule())
             Capsule()
                 .fill(.white.opacity(0.3))
                 .frame(width: max(0, width * bufferFraction), height: trackHeight)
