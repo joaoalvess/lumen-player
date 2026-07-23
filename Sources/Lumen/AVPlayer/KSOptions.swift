@@ -520,26 +520,32 @@ public extension KSOptions {
         return Int(ncpu)
     }
 
+    private static let audioSessionQueue = DispatchQueue(label: "Lumen.AudioSession")
+
     static func setAudioSession() {
         #if os(macOS)
 //        try? AVAudioSession.sharedInstance().setRouteSharingPolicy(.longFormAudio)
         #else
-        var category = AVAudioSession.sharedInstance().category
-        if category != .playAndRecord {
-            category = .playback
+        audioSessionQueue.async {
+            var category = AVAudioSession.sharedInstance().category
+            if category != .playAndRecord {
+                category = .playback
+            }
+            #if os(tvOS)
+            try? AVAudioSession.sharedInstance().setCategory(category, mode: .moviePlayback, policy: .longFormAudio)
+            #else
+            try? AVAudioSession.sharedInstance().setCategory(category, mode: .moviePlayback, policy: .longFormVideo)
+            #endif
+            try? AVAudioSession.sharedInstance().setActive(true)
         }
-        #if os(tvOS)
-        try? AVAudioSession.sharedInstance().setCategory(category, mode: .moviePlayback, policy: .longFormAudio)
-        #else
-        try? AVAudioSession.sharedInstance().setCategory(category, mode: .moviePlayback, policy: .longFormVideo)
-        #endif
-        try? AVAudioSession.sharedInstance().setActive(true)
         #endif
     }
 
     static func deactivateAudioSession() {
         #if !os(macOS)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        audioSessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         #endif
     }
 
