@@ -53,7 +53,7 @@ class DOVIPacketRewriterTest: XCTestCase {
         var allocated = try makePacket(payload: payload(of: [vcl, enhancementLayer], lengthSize: 4))
         defer { av_packet_free(&allocated) }
         let packet = try XCTUnwrap(allocated)
-        try DOVIPacketRewriter.rewrite(packet: packet, nalLengthSize: 4)
+        XCTAssertFalse(try DOVIPacketRewriter.rewrite(packet: packet, nalLengthSize: 4))
         let expected = payload(of: [vcl], lengthSize: 4)
         XCTAssertEqual(Int(packet.pointee.size), expected.count)
         XCTAssertEqual(try payloadBytes(of: packet), expected)

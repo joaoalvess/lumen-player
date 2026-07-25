@@ -31,6 +31,7 @@ public final class MEPlayerItem: Sendable {
     private var remuxStreamsRequiringParsedHeader = Set<Int>()
     private var remuxFirstCutDeferredAt: Double?
     private var remuxDOVIConversionNALLengthSize: Int?
+    private var remuxDOVIConvertedRPUCount = 0
     private var openOperation: BlockOperation?
     private var readOperation: BlockOperation?
     private var closeOperation: BlockOperation?
@@ -313,6 +314,7 @@ extension MEPlayerItem {
             return
         }
         remuxDOVIConversionNALLengthSize = nil
+        remuxDOVIConvertedRPUCount = 0
         if signaling.convertsDolbyVisionProfile7 {
             guard let nalLengthSize = DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: videoAssetTrack.codecpar.extradata, size: videoAssetTrack.codecpar.extradata_size) else {
                 error = NSError(description: "ProAV dolby vision conversion unsupported")
@@ -478,7 +480,9 @@ extension MEPlayerItem {
         av_packet_ref(outputPacket, corePacket)
         if let nalLengthSize = remuxDOVIConversionNALLengthSize, outputStream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO {
             do {
-                try DOVIPacketRewriter.rewrite(packet: outputPacket, nalLengthSize: nalLengthSize)
+                if try DOVIPacketRewriter.rewrite(packet: outputPacket, nalLengthSize: nalLengthSize) {
+                    remuxDOVIConvertedRPUCount += 1
+                }
             } catch {
                 av_packet_unref(outputPacket)
                 session.fail(NSError(description: "ProAV dolby vision conversion failed"))
@@ -510,6 +514,10 @@ extension MEPlayerItem {
 
     private func canWriteRemuxFragment(at seconds: Double, session: ProAVRemuxSession) -> Bool {
         guard !remuxMoovWritten else { return true }
+        if remuxDOVIConversionNALLengthSize != nil, remuxDOVIConvertedRPUCount == 0 {
+            session.fail(NSError(description: "ProAV dolby vision conversion found no rpu"))
+            return false
+        }
         guard !remuxStreamsAwaitingFirstPacket.isEmpty else { return true }
         guard let deferredAt = remuxFirstCutDeferredAt else {
             remuxFirstCutDeferredAt = seconds

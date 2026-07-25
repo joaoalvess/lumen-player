@@ -89,13 +89,19 @@ enum DOVIPacketRewriter {
         }
     }
 
-    static func rewrite(packet: UnsafeMutablePointer<AVPacket>, nalLengthSize: Int) throws {
+    static func rewrite(packet: UnsafeMutablePointer<AVPacket>, nalLengthSize: Int) throws -> Bool {
         let size = Int(packet.pointee.size)
         guard size > 0, let data = packet.pointee.data else {
             throw DOVIPacketRewriteError.missingPayload
         }
-        let payload = Data(bytesNoCopy: data, count: size, deallocator: .none)
-        let rewritten = try rewrite(payload: payload, nalLengthSize: nalLengthSize, transformRPUNALUnit: convertRPUNALUnitToProfile81)
+        var convertedRPU = false
+        let rewritten = try rewrite(payload: Data(bytesNoCopy: data, count: size, deallocator: .none), nalLengthSize: nalLengthSize) { nalUnit in
+            let converted = convertRPUNALUnitToProfile81(nalUnit)
+            if converted != nil {
+                convertedRPU = true
+            }
+            return converted
+        }
         guard let rewrittenSize = Int32(exactly: rewritten.count) else {
             throw DOVIPacketRewriteError.oversizedPayload
         }
@@ -122,6 +128,7 @@ enum DOVIPacketRewriter {
         }
         av_packet_unref(packet)
         av_packet_move_ref(packet, replacement)
+        return convertedRPU
     }
 
     static func convertRPUNALUnitToProfile81(_ nalUnit: Data) -> Data? {
