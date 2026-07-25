@@ -45,6 +45,7 @@ public final class MEPlayerItem: Sendable {
     private var isSeek = false
     private var memorySeekAwaitingTracks = 0
     private var memorySeekFailed = false
+    private var memorySeekEpoch = 0
     private var allPlayerItemTracks = [PlayerItemTrackProtocol]()
     private var maxFrameDuration = 10.0
     private var videoAudioTracks = [CapacityProtocol]()
@@ -924,22 +925,24 @@ extension MEPlayerItem {
         let asyncVideoTrack = videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>
         let asyncAudioTrack = audioTrack as? AsyncPlayerItemTrack<AudioFrame>
         condition.lock()
+        memorySeekEpoch &+= 1
+        let epoch = memorySeekEpoch
         memorySeekAwaitingTracks = (asyncVideoTrack == nil ? 0 : 1) + (asyncAudioTrack == nil ? 0 : 1)
         memorySeekFailed = false
         condition.unlock()
         asyncVideoTrack?.fastSeek(to: target) { [weak self] drained in
-            self?.finishMemorySeek(drained: drained)
+            self?.finishMemorySeek(epoch: epoch, drained: drained)
         }
         asyncAudioTrack?.fastSeek(to: target) { [weak self] drained in
-            self?.finishMemorySeek(drained: drained)
+            self?.finishMemorySeek(epoch: epoch, drained: drained)
         }
         return waitForMemorySeek()
     }
 
-    private func finishMemorySeek(drained: Bool) {
+    private func finishMemorySeek(epoch: Int, drained: Bool) {
         condition.lock()
         defer { condition.unlock() }
-        guard memorySeekAwaitingTracks > 0 else {
+        guard epoch == memorySeekEpoch, memorySeekAwaitingTracks > 0 else {
             return
         }
         memorySeekAwaitingTracks -= 1
@@ -960,6 +963,7 @@ extension MEPlayerItem {
         }
         let drained = memorySeekAwaitingTracks == 0 && !memorySeekFailed
         memorySeekAwaitingTracks = 0
+        memorySeekEpoch &+= 1
         return drained
     }
 }
