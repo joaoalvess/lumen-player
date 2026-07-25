@@ -91,6 +91,13 @@ struct ProAVVideoSignaling {
         codecTag.utf8.reduce(0) { ($0 << 8) | UInt32($1) }
     }
 
+    func addingDynamicHDR10Plus() -> ProAVVideoSignaling {
+        guard codecTag == "hvc1", videoRange == "PQ", supplementalCodecs == nil else {
+            return self
+        }
+        return ProAVVideoSignaling(codecTag: codecTag, codecsAttribute: codecsAttribute, videoRange: videoRange, supplementalCodecs: "\(codecsAttribute)/\(ProAVHDR10PlusScanner.compatibleBrand)", preferredDynamicRange: preferredDynamicRange, convertsDolbyVisionProfile7: convertsDolbyVisionProfile7)
+    }
+
     static func h264CodecsAttribute(avcC: UnsafePointer<UInt8>?, size: Int32) -> String? {
         guard let avcC, size >= 4, avcC[0] == 1 else {
             return nil

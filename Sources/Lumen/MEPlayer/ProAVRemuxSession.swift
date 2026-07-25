@@ -32,6 +32,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     private var currentHandle: FileHandle?
     private var initScanner = ProAVInitBoundaryScanner()
     private var initBoundaryFound = false
+    private var dynamicHDR10PlusDetected = false
     private var segments = [ProAVSegment]()
     private var segmentIndex = 0
     private var segmentStart: Double?
@@ -103,6 +104,13 @@ public final class ProAVRemuxSession: @unchecked Sendable {
             currentHandle = handle
             currentSegmentBytes = 0
             return true
+        }
+    }
+
+    func noteDynamicHDR10Plus() {
+        withLock {
+            guard !initBoundaryFound else { return }
+            dynamicHDR10PlusDetected = true
         }
     }
 
@@ -321,14 +329,18 @@ public final class ProAVRemuxSession: @unchecked Sendable {
             failLocked(NSError(description: "ProAV init segment handle missing"))
             return false
         }
-        guard initHandle.proAVWrite(initSegment) else {
+        let effectiveSignaling = dynamicHDR10PlusDetected ? signaling.addingDynamicHDR10Plus() : signaling
+        let effectiveInitSegment = effectiveSignaling.supplementalCodecs == signaling.supplementalCodecs
+            ? initSegment
+            : ProAVHDR10PlusScanner.appendingCompatibleBrand(ProAVHDR10PlusScanner.compatibleBrand, toInitSegment: initSegment) ?? initSegment
+        guard initHandle.proAVWrite(effectiveInitSegment) else {
             failLocked(NSError(description: "ProAV init segment write failed"))
             return false
         }
         initHandle.proAVClose()
         currentHandle = nil
         initBoundaryFound = true
-        let master = ProAVPlaylist.master(mediaPlaylistName: Self.mediaPlaylistName, video: signaling, audio: audioSignaling, bandwidth: bandwidth, resolution: resolution, frameRate: frameRate)
+        let master = ProAVPlaylist.master(mediaPlaylistName: Self.mediaPlaylistName, video: effectiveSignaling, audio: audioSignaling, bandwidth: bandwidth, resolution: resolution, frameRate: frameRate)
         writeLocked(text: master, to: masterURL)
         guard !failed else { return false }
         guard let segmentHandle = openFileLocked(named: segmentFileName(index: segmentIndex)) else { return false }
