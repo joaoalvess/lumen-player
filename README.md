@@ -22,8 +22,9 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 ## ✨ Features
 
 **Picture & sound**
-- 🎞️ Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
-- 🔉 E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. Atmos rides along in the E-AC-3 stream, though the playlist doesn't yet emit the `dec3` complexity signaling — the code marks that as pending
+- 🎞️ Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` and carries the `dvcC`/`dvvC` configuration box through, so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
+- 🧬 **Profile 7 is converted to 8.1** on the way through the remux: the enhancement-layer NAL units are dropped and the RPU is rewritten single-layer with libdovi, turning a format `AVPlayer` refuses outright into one it plays. Implemented and unit-tested; not yet checked against a real Dolby Vision display
+- 🔉 E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. For Atmos the `moov` is held back until the muxer has parsed an audio frame, so the `dec3` box comes out filled instead of empty, and the playlist declares `CHANNELS="16/JOC"` when the decoder reports the DD+ Atmos profile. Same caveat: the code path is there, the receiver check isn't done
 - 🎛️ TrueHD and DTS are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone
 - 📼 MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
 - 🎚️ The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
@@ -39,6 +40,8 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 **Streaming**
 - 💾 Byte-range **disk cache** backed by `URLSession` — feeds FFmpeg through a custom AVIO context and `AVPlayer` through a resource loader
 - ⚡ Fast seeking inside cached ranges — a seek that lands on cached bytes costs no round trip. The cache fills on demand and never fetches less than 1 MB at a time; there is no background precaching ahead of the playhead
+- 🧠 Short forward seeks are served **straight from the packets already in RAM** — no demuxer seek, no round trip. Anything outside the buffered window falls back to the normal seek path
+- 🔀 **Hot source switching** — opt-in via `isSourceSwitchEnabled`: swapping to another URL of the same title prepares the new source in parallel and only commits when it is ready, so the current frame stays on screen instead of a teardown. On the remux engine playback rewinds by the remux latency at the swap
 - 🌐 Opt-in: set `diskCacheDirectory` and HTTP(S) reads go through `URLSession` instead of FFmpeg's network layer. URLs ending in `.m3u8`/`.m3u` are excluded, and scrub thumbnails always open through FFmpeg's own stack
 
 **Subtitles**
@@ -178,7 +181,7 @@ KSVideoPlayerView(coordinator: coordinator, url: url, options: options)
 
 ## 🗺️ Roadmap
 
-What's planned next — native Dolby Vision dynamic metadata, instant stream switching, full ASS effects — lives in [`ROADMAP.md`](./ROADMAP.md).
+What's planned next — HDR10+ dynamic metadata, background read-ahead, full ASS effects — lives in [`ROADMAP.md`](./ROADMAP.md).
 
 ## 🙏 Credits
 
