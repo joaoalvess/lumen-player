@@ -721,25 +721,22 @@ extension MEPlayerItem {
                     let time = mainClock().time
                     let increaseSeconds = seekToTime + startTime.seconds - time.seconds
                     if increaseSeconds > 0, serveSeekFromMemory(target: seekToTime + startTime.seconds) {
-                        if state == .closed {
-                            break
-                        }
                         condition.lock()
-                        let committed = seekToTime == seekTime
+                        let committed = state != .closed && seekToTime == seekTime
                         if committed {
+                            isSeek = true
+                            audioClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
+                            videoClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
                             state = .reading
                         }
                         condition.unlock()
                         if committed {
                             KSLog("seek to \(seekToTime) served from memory")
-                            isSeek = true
                             DispatchQueue.main.async { [weak self] in
                                 guard let self else { return }
                                 self.seekingCompletionHandler?(true)
                                 self.seekingCompletionHandler = nil
                             }
-                            audioClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
-                            videoClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
                         }
                         continue
                     } else {
