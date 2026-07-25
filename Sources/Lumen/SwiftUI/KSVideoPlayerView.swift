@@ -37,6 +37,7 @@ public struct KSVideoPlayerView: View {
     @State
     private var tvIsInitialLoading = true
     #endif
+    private let requestedURL: URL
     @State
     public var url: URL {
         didSet {
@@ -104,6 +105,7 @@ public struct KSVideoPlayerView: View {
         onClose: (() -> Void)?,
         usesEmbeddedTitle: Bool
     ) {
+        requestedURL = url.wrappedValue
         _url = url
         _playerCoordinator = .init(wrappedValue: coordinator)
         _title = title
@@ -167,6 +169,11 @@ public struct KSVideoPlayerView: View {
         .tint(.white)
         .persistentSystemOverlays(.hidden)
         .toolbar(.hidden, for: .automatic)
+        .task(id: requestedURL) {
+            if url != requestedURL {
+                url = requestedURL
+            }
+        }
         #if os(tvOS)
             .onPlayPauseCommand {
                 togglePlaybackAndShowTransport()

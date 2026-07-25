@@ -65,7 +65,14 @@ extension KSVideoPlayer: UIViewRepresentable {
 
     @MainActor
     private func updateView(_: UIView, context: Context) {
-        if context.coordinator.playerLayer?.url != url {
+        guard let playerLayer = context.coordinator.playerLayer else {
+            _ = context.coordinator.makeView(url: url, options: options)
+            return
+        }
+        guard (playerLayer.pendingSourceSwitchURL ?? playerLayer.url) != url else { return }
+        if options.isSourceSwitchEnabled {
+            context.coordinator.switchSource(url: url, options: options)
+        } else {
             _ = context.coordinator.makeView(url: url, options: options)
         }
     }
@@ -187,6 +194,22 @@ extension KSVideoPlayer: UIViewRepresentable {
             addSwipeGestures(to: view)
             #endif
             return view
+        }
+
+        public func switchSource(url: URL, options: KSOptions) {
+            guard let playerLayer else {
+                _ = makeView(url: url, options: options)
+                return
+            }
+            playerLayer.switchSource(url: url, options: options) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.playerLayer?.url == url else { return }
+                    #if os(tvOS)
+                    self.scrubThumbnails.shutdown()
+                    #endif
+                    self.subtitleModel.url = url
+                }
+            }
         }
 
         public func resetPlayerIfViewDetached() {

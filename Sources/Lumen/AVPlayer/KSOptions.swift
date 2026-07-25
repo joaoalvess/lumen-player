@@ -30,6 +30,7 @@ open class KSOptions {
     public var isLoopPlay = KSOptions.isLoopPlay
     /// seek完是否自动播放
     public var isSeekedAutoPlay = KSOptions.isSeekedAutoPlay
+    public var isSourceSwitchEnabled = false
     /*
      AVSEEK_FLAG_BACKWARD: 1
      AVSEEK_FLAG_BYTE: 2

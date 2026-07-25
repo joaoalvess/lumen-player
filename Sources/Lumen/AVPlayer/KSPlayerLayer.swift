@@ -127,6 +127,7 @@ open class KSPlayerLayer: NSObject {
 
     public private(set) var url: URL {
         didSet {
+            guard !isCommittingSourceSwitch else { return }
             let firstPlayerType: MediaPlayerProtocol.Type
             if isWirelessRouteActive {
                 // airplay的话，默认使用KSAVPlayer
@@ -190,6 +191,10 @@ open class KSPlayerLayer: NSObject {
     private var bufferedCount = 0
     private var shouldSeekTo: TimeInterval = 0
     private var startTime: TimeInterval = 0
+    private var sourceSwitchGeneration = 0
+    private var isCommittingSourceSwitch = false
+    private var pendingSourceSwitchCompletions = [(Bool) -> Void]()
+    public private(set) var pendingSourceSwitchURL: URL?
     public init(url: URL, isAutoPlay: Bool = KSOptions.isAutoPlay, options: KSOptions, delegate: KSPlayerLayerDelegate? = nil) {
         self.url = url
         self.options = options
@@ -257,6 +262,7 @@ open class KSPlayerLayer: NSObject {
     }
 
     public func set(url: URL, options: KSOptions) {
+        cancelPendingSourceSwitch()
         self.options = options
         runOnMainThread {
             self.url = url
@@ -264,6 +270,7 @@ open class KSPlayerLayer: NSObject {
     }
 
     public func set(urls: [URL], options: KSOptions) {
+        cancelPendingSourceSwitch()
         self.options = options
         self.urls.removeAll()
         self.urls.append(contentsOf: urls)
@@ -271,6 +278,64 @@ open class KSPlayerLayer: NSObject {
             runOnMainThread {
                 self.url = first
             }
+        }
+    }
+
+    public func switchSource(url: URL, options: KSOptions, completion: ((Bool) -> Void)? = nil) {
+        if pendingSourceSwitchURL == url {
+            if let completion {
+                pendingSourceSwitchCompletions.append(completion)
+            }
+            return
+        }
+        if pendingSourceSwitchURL != nil {
+            cancelPendingSourceSwitch()
+        }
+        if url == self.url {
+            completion?(true)
+            return
+        }
+        sourceSwitchGeneration += 1
+        let generation = sourceSwitchGeneration
+        pendingSourceSwitchURL = url
+        player.switchSource(url: url, options: options) { [weak self] success in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard generation == self.sourceSwitchGeneration else {
+                    completion?(false)
+                    return
+                }
+                self.pendingSourceSwitchURL = nil
+                if success {
+                    self.commitSourceSwitch(url: url, options: options)
+                } else {
+                    self.set(url: url, options: options)
+                }
+                completion?(success)
+                self.resolvePendingSourceSwitchCompletions(success)
+            }
+        }
+    }
+
+    private func commitSourceSwitch(url: URL, options: KSOptions) {
+        self.options = options
+        isCommittingSourceSwitch = true
+        self.url = url
+        isCommittingSourceSwitch = false
+    }
+
+    private func cancelPendingSourceSwitch() {
+        sourceSwitchGeneration += 1
+        pendingSourceSwitchURL = nil
+        player.cancelSourceSwitch()
+        resolvePendingSourceSwitchCompletions(false)
+    }
+
+    private func resolvePendingSourceSwitchCompletions(_ success: Bool) {
+        let completions = pendingSourceSwitchCompletions
+        pendingSourceSwitchCompletions.removeAll()
+        for completion in completions {
+            completion(success)
         }
     }
 
@@ -315,6 +380,7 @@ open class KSPlayerLayer: NSObject {
 
     public func stop() {
         KSLog("stop Player")
+        cancelPendingSourceSwitch()
         state = .initialized
         player.shutdown()
         bufferedCount = 0

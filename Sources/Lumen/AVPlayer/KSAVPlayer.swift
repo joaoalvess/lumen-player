@@ -92,6 +92,18 @@ public class KSAVPlayer {
     private var loopStatusObservation: NSKeyValueObservation?
     private var mediaPlayerTracks = [AVMediaPlayerTrack]()
     private let embedSubtitleDataSouce = AVSubtitleDataSouce()
+    private static let sourceSwitchTimeout = TimeInterval(10)
+    private struct PendingSourceSwitch {
+        let item: AVPlayerItem
+        let asset: AVURLAsset
+        let loader: DiskCacheResourceLoader?
+        let options: KSOptions
+        let completion: (Bool) -> Void
+        var statusObservation: NSKeyValueObservation?
+        var timeout: DispatchWorkItem?
+    }
+
+    private var pendingSourceSwitch: PendingSourceSwitch?
     private var error: Error? {
         didSet {
             if let error {
@@ -455,6 +467,7 @@ extension KSAVPlayer: MediaPlayerProtocol {
 
     public func shutdown() {
         KSLog("shutdown \(self)")
+        abandonPendingSourceSwitch()
         isReadyToPlay = false
         playbackState = .stopped
         loadState = .idle
@@ -470,6 +483,77 @@ extension KSAVPlayer: MediaPlayerProtocol {
         urlAsset = asset
         cacheResourceLoader = loader
         self.options = options
+    }
+
+    public func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
+        abandonPendingSourceSwitch()
+        guard !options.isLoopPlay, playerLooper == nil, let currentItem = player.currentItem else {
+            completion(false)
+            return
+        }
+        let (asset, loader) = KSAVPlayer.makeAsset(url: url, options: options)
+        let candidate = AVPlayerItem(asset: asset)
+        candidate.preferredForwardBufferDuration = options.preferredForwardBufferDuration
+        guard player.canInsert(candidate, after: currentItem) else {
+            asset.cancelLoading()
+            loader?.close()
+            completion(false)
+            return
+        }
+        var pending = PendingSourceSwitch(item: candidate, asset: asset, loader: loader, options: options, completion: completion)
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.abandonPendingSourceSwitch()
+        }
+        pending.timeout = timeout
+        pendingSourceSwitch = pending
+        player.insert(candidate, after: currentItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + KSAVPlayer.sourceSwitchTimeout, execute: timeout)
+        let statusObservation = candidate.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard let self else { return }
+            if item.status == .readyToPlay {
+                self.commitPendingSourceSwitch()
+            } else if item.status == .failed {
+                self.abandonPendingSourceSwitch()
+            }
+        }
+        pendingSourceSwitch?.statusObservation = statusObservation
+    }
+
+    public func cancelSourceSwitch() {
+        abandonPendingSourceSwitch()
+    }
+
+    private func commitPendingSourceSwitch() {
+        guard let pending = pendingSourceSwitch else { return }
+        let candidateTracks = pending.item.tracks.map { AVMediaPlayerTrack(track: $0) }
+        guard candidateTracks.contains(where: { $0.mediaType == .video && $0.isPlayable }) else {
+            abandonPendingSourceSwitch()
+            return
+        }
+        pendingSourceSwitch = nil
+        pending.statusObservation?.invalidate()
+        pending.timeout?.cancel()
+        let previousAsset = urlAsset
+        let previousLoader = cacheResourceLoader
+        urlAsset = pending.asset
+        cacheResourceLoader = pending.loader
+        player.advanceToNextItem()
+        options = pending.options
+        updateStatus(item: pending.item)
+        previousAsset.cancelLoading()
+        previousLoader?.close()
+        pending.completion(true)
+    }
+
+    func abandonPendingSourceSwitch() {
+        guard let pending = pendingSourceSwitch else { return }
+        pendingSourceSwitch = nil
+        pending.statusObservation?.invalidate()
+        pending.timeout?.cancel()
+        player.remove(pending.item)
+        pending.asset.cancelLoading()
+        pending.loader?.close()
+        pending.completion(false)
     }
 
     public var contentMode: UIViewContentMode {
