@@ -1,6 +1,18 @@
 @testable import Lumen
 import XCTest
 
+private final class StubSubtitleInfo: SubtitleInfo {
+    let subtitleID = "stub"
+    let name = "stub"
+    var delay: TimeInterval = 0
+    var isEnabled = false
+    var parts = [SubtitlePart]()
+
+    func search(for _: TimeInterval) -> [SubtitlePart] {
+        parts
+    }
+}
+
 class SubtitleTest: XCTestCase {
     func testSrt() {
         let string = """
@@ -146,5 +158,54 @@ class SubtitleTest: XCTestCase {
         XCTAssertEqual(parts.count, 1)
         let text = try XCTUnwrap(parts[0].text)
         XCTAssertNil(text.attribute(.font, at: 0, effectiveRange: nil))
+    }
+
+    func testTickKeepsTheFontTheParserSet() throws {
+        let parsedFont = UIFont.systemFont(ofSize: 12)
+        let text = NSMutableAttributedString(string: "Hello")
+        text.addAttribute(.font, value: parsedFont, range: NSRange(location: 0, length: text.length))
+        let info = StubSubtitleInfo()
+        info.parts = [SubtitlePart(0, 10, attributedString: text)]
+        let model = SubtitleModel()
+        model.selectedSubtitleInfo = info
+        XCTAssertEqual(model.subtitle(currentTime: 1), true)
+        XCTAssertEqual(model.parts.count, 1)
+        let displayed = try XCTUnwrap(model.parts[0].text)
+        let font = try XCTUnwrap(displayed.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(font.pointSize, 12, accuracy: 0.01)
+        XCTAssertEqual(font.fontName, parsedFont.fontName)
+    }
+
+    func testTickFillsTheGlobalFontWhenTheParserSetNone() throws {
+        let text = NSMutableAttributedString(string: "Hello")
+        let info = StubSubtitleInfo()
+        info.parts = [SubtitlePart(0, 10, attributedString: text)]
+        let model = SubtitleModel()
+        model.selectedSubtitleInfo = info
+        XCTAssertEqual(model.subtitle(currentTime: 1), true)
+        XCTAssertEqual(model.parts.count, 1)
+        let displayed = try XCTUnwrap(model.parts[0].text)
+        let font = try XCTUnwrap(displayed.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(font.pointSize, SubtitleModel.textFontSize, accuracy: 0.01)
+    }
+
+    func testTickFillsOnlyTheRunsWithoutFont() throws {
+        let parsedFont = UIFont.systemFont(ofSize: 12)
+        let text = NSMutableAttributedString(string: "Styled")
+        text.addAttribute(.font, value: parsedFont, range: NSRange(location: 0, length: text.length))
+        let plainLocation = text.length
+        text.append(NSAttributedString(string: "Plain"))
+        let info = StubSubtitleInfo()
+        info.parts = [SubtitlePart(0, 10, attributedString: text)]
+        let model = SubtitleModel()
+        model.selectedSubtitleInfo = info
+        XCTAssertEqual(model.subtitle(currentTime: 1), true)
+        XCTAssertEqual(model.parts.count, 1)
+        let displayed = try XCTUnwrap(model.parts[0].text)
+        let styledFont = try XCTUnwrap(displayed.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(styledFont.pointSize, 12, accuracy: 0.01)
+        XCTAssertEqual(styledFont.fontName, parsedFont.fontName)
+        let plainFont = try XCTUnwrap(displayed.attribute(.font, at: plainLocation, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(plainFont.pointSize, SubtitleModel.textFontSize, accuracy: 0.01)
     }
 }
