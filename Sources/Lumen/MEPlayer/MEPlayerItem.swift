@@ -1062,6 +1062,8 @@ extension MEPlayerItem: MediaPlayback {
             condition.unlock()
             if isEligible {
                 memorySeekPassiveTracks.forEach { $0.seek(time: time) }
+                videoTrack?.outputRenderQueue.flush()
+                audioTrack?.outputRenderQueue.flush()
             } else {
                 allPlayerItemTracks.forEach { $0.seek(time: time) }
             }
