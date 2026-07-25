@@ -40,7 +40,7 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
     fileprivate let options: KSOptions
     fileprivate let decoderLock = NSLock()
     fileprivate var decoderMap = [Int32: DecodeProtocol]()
-    private let stateLock = NSLock()
+    fileprivate let stateLock = NSLock()
     private var _state = MECodecState.idle
     fileprivate var state: MECodecState {
         get {
@@ -207,7 +207,20 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
     }
 }
 
+func packetWindowCovers(target: TimeInterval, head: ObjectQueueItem, tail: ObjectQueueItem, margin: TimeInterval = 1) -> Bool {
+    guard head.timestamp != Int64.min, tail.timestamp != Int64.min else {
+        return false
+    }
+    return target > head.seconds && target <= tail.seconds - margin
+}
+
 final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
+    private struct PendingMemorySeek {
+        let target: TimeInterval
+        let onFailure: () -> Void
+    }
+
+    private var pendingMemorySeek: PendingMemorySeek?
     private let operationQueue = OperationQueue()
     private var decodeOperation: BlockOperation!
     // 无缝播放使用的PacketQueue
@@ -277,7 +290,9 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
                 decoderMap.values.forEach { $0.doFlushCodec() }
                 state = .decoding
             case .decoding:
-                if isEndOfFile, packetQueue.count == 0 {
+                if let pending = takePendingMemorySeek() {
+                    performMemorySeek(pending)
+                } else if isEndOfFile, packetQueue.count == 0 {
                     state = .finished
                 } else {
                     guard let packet = packetQueue.pop(wait: true), state != .flush, state != .closed else {
@@ -292,12 +307,69 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     }
 
     override func seek(time: TimeInterval) {
+        clearPendingMemorySeek()
         if decodeOperation.isFinished {
             decode()
         }
         packetQueue.flush()
         super.seek(time: time)
         loopPacketQueue = nil
+    }
+
+    func canServeSeekFromBuffer(target: TimeInterval) -> Bool {
+        guard let edges = packetQueue.peekEdges(),
+              packetWindowCovers(target: target, head: edges.head, tail: edges.tail)
+        else {
+            return false
+        }
+        return startPacket(atOrBefore: target) != nil
+    }
+
+    func fastSeek(to time: TimeInterval, onFailure: @escaping () -> Void) {
+        if decodeOperation?.isFinished == true {
+            decode()
+        }
+        seekTime = time
+        outputRenderQueue.flush()
+        stateLock.lock()
+        pendingMemorySeek = PendingMemorySeek(target: time, onFailure: onFailure)
+        stateLock.unlock()
+    }
+
+    private func takePendingMemorySeek() -> PendingMemorySeek? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let pending = pendingMemorySeek
+        pendingMemorySeek = nil
+        return pending
+    }
+
+    private func clearPendingMemorySeek() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        pendingMemorySeek = nil
+    }
+
+    private func startPacket(atOrBefore target: TimeInterval) -> Packet? {
+        let needsKeyFrame = mediaType == .video
+        var chosen: Packet?
+        packetQueue.scan { packet in
+            if packet.timestamp != Int64.min, packet.seconds <= target, !needsKeyFrame || packet.isKeyFrame {
+                chosen = packet
+            }
+            return true
+        }
+        return chosen
+    }
+
+    private func performMemorySeek(_ pending: PendingMemorySeek) {
+        guard let chosen = startPacket(atOrBefore: pending.target), packetQueue.drain(upTo: chosen) else {
+            if state == .decoding {
+                pending.onFailure()
+            }
+            return
+        }
+        decoderMap.values.forEach { $0.doFlushCodec() }
     }
 
     override func shutdown() {

@@ -42,6 +42,7 @@ public final class MEPlayerItem: Sendable {
     private var videoClock = KSClock()
     private var isFirst = true
     private var isSeek = false
+    private var memorySeekNeedsNetwork = false
     private var allPlayerItemTracks = [PlayerItemTrackProtocol]()
     private var maxFrameDuration = 10.0
     private var videoAudioTracks = [CapacityProtocol]()
@@ -709,8 +710,45 @@ extension MEPlayerItem {
             while state == .paused {
                 condition.wait()
             }
+            var forceNetworkSeek = false
+            if state == .seeking {
+                forceNetworkSeek = memorySeekNeedsNetwork
+                memorySeekNeedsNetwork = false
+            }
             condition.unlock()
             if state == .seeking {
+                if !forceNetworkSeek, !seekByBytes, options.isMemorySeekEnabled,
+                   allPlayerItemTracks.allSatisfy({ !$0.isLoopModel })
+                {
+                    let seekToTime = seekTime
+                    let time = mainClock().time
+                    let increaseSeconds = seekToTime + startTime.seconds - time.seconds
+                    if increaseSeconds > 0, serveSeekFromMemory(target: seekToTime + startTime.seconds) {
+                        if state == .closed {
+                            break
+                        }
+                        condition.lock()
+                        let committed = !memorySeekNeedsNetwork && seekToTime == seekTime
+                        if committed {
+                            state = .reading
+                        }
+                        condition.unlock()
+                        if committed {
+                            KSLog("seek to \(seekToTime) served from memory")
+                            isSeek = true
+                            DispatchQueue.main.async { [weak self] in
+                                guard let self else { return }
+                                self.seekingCompletionHandler?(true)
+                                self.seekingCompletionHandler = nil
+                            }
+                            audioClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
+                            videoClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
+                        }
+                        continue
+                    } else {
+                        KSLog("memory seek miss for \(seekToTime)")
+                    }
+                }
                 let seekToTime = seekTime
                 let time = mainClock().time
                 let increaseSeconds = seekTime + startTime.seconds - time.seconds
@@ -741,6 +779,7 @@ extension MEPlayerItem {
                 }
                 let seekMin = increase > 0 ? timeStamp - increase + 2 : Int64.min
                 let seekMax = increase < 0 ? timeStamp - increase - 2 : Int64.max
+                allPlayerItemTracks.forEach { $0.seek(time: seekToTime) }
                 // can not seek to key frame
                 let seekStartTime = CACurrentMediaTime()
                 var result = avformat_seek_file(formatCtx, -1, seekMin, timeStamp, seekMax, seekFlags)
@@ -762,7 +801,6 @@ extension MEPlayerItem {
                     continue
                 }
                 isSeek = true
-                allPlayerItemTracks.forEach { $0.seek(time: seekToTime) }
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.seekingCompletionHandler?(result >= 0)
@@ -847,6 +885,62 @@ extension MEPlayerItem {
             condition.signal()
         }
         condition.unlock()
+    }
+
+    private func canServeSeekFromMemory(target: TimeInterval) -> Bool {
+        let asyncVideoTrack = videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>
+        let asyncAudioTrack = audioTrack as? AsyncPlayerItemTrack<AudioFrame>
+        if videoTrack != nil, asyncVideoTrack == nil {
+            return false
+        }
+        if audioTrack != nil, asyncAudioTrack == nil {
+            return false
+        }
+        if asyncVideoTrack == nil, asyncAudioTrack == nil {
+            return false
+        }
+        if let asyncVideoTrack, !asyncVideoTrack.canServeSeekFromBuffer(target: target) {
+            return false
+        }
+        if let asyncAudioTrack, !asyncAudioTrack.canServeSeekFromBuffer(target: target) {
+            return false
+        }
+        return true
+    }
+
+    private func isMemorySeekEligible(time: TimeInterval) -> Bool {
+        guard !seekByBytes, options.isMemorySeekEnabled, allPlayerItemTracks.allSatisfy({ !$0.isLoopModel }) else {
+            return false
+        }
+        let target = time + startTime.seconds
+        guard target - mainClock().time.seconds > 0 else {
+            return false
+        }
+        return canServeSeekFromMemory(target: target)
+    }
+
+    private func serveSeekFromMemory(target: TimeInterval) -> Bool {
+        guard canServeSeekFromMemory(target: target) else {
+            return false
+        }
+        (videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>)?.fastSeek(to: target) { [weak self] in
+            self?.handleMemorySeekFailure()
+        }
+        (audioTrack as? AsyncPlayerItemTrack<AudioFrame>)?.fastSeek(to: target) { [weak self] in
+            self?.handleMemorySeekFailure()
+        }
+        return true
+    }
+
+    private func handleMemorySeekFailure() {
+        condition.lock()
+        defer { condition.unlock() }
+        guard [MESourceState.reading, .paused, .seeking].contains(state) else {
+            return
+        }
+        memorySeekNeedsNetwork = true
+        state = .seeking
+        condition.broadcast()
     }
 }
 
@@ -935,13 +1029,16 @@ extension MEPlayerItem: MediaPlayback {
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
         if state == .reading || state == .paused {
+            let isEligible = isMemorySeekEligible(time: time)
             condition.lock()
             seekTime = time
             state = .seeking
             seekingCompletionHandler = completion
             condition.broadcast()
             condition.unlock()
-            allPlayerItemTracks.forEach { $0.seek(time: time) }
+            if !isEligible {
+                allPlayerItemTracks.forEach { $0.seek(time: time) }
+            }
         } else if state == .finished {
             seekTime = time
             state = .seeking

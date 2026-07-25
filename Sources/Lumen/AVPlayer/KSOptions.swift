@@ -24,6 +24,8 @@ open class KSOptions {
     public var isSecondOpen = KSOptions.isSecondOpen
     /// 开启精确seek
     public var isAccurateSeek = KSOptions.isAccurateSeek
+    /// Serve forward seeks that land inside the buffered packet window from memory, falling back to the demuxer seek
+    public var isMemorySeekEnabled = KSOptions.isMemorySeekEnabled
     /// Applies to short videos only
     public var isLoopPlay = KSOptions.isLoopPlay
     /// seek完是否自动播放
@@ -492,6 +494,8 @@ public extension KSOptions {
     static var isSecondOpen = false
     /// 开启精确seek
     static var isAccurateSeek = false
+    /// Serve forward seeks that land inside the buffered packet window from memory, falling back to the demuxer seek
+    static var isMemorySeekEnabled = true
     /// Applies to short videos only
     static var isLoopPlay = false
     /// 是否自动播放，默认true

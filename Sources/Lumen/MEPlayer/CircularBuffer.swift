@@ -114,6 +114,37 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         }
     }
 
+    func peekEdges() -> (head: Item, tail: Item)? {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed || headIndex == tailIndex {
+            return nil
+        }
+        guard let head = _buffer[Int(headIndex & mask)], let tail = _buffer[Int((tailIndex &- 1) & mask)] else {
+            return nil
+        }
+        return (head, tail)
+    }
+
+    func scan(_ body: (Item) -> Bool) {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed {
+            return
+        }
+        var i = headIndex
+        while i < tailIndex {
+            guard let item = _buffer[Int(i & mask)] else {
+                assertionFailure("value is nil of index: \(i) headIndex: \(headIndex), tailIndex: \(tailIndex), bufferCount: \(_buffer.count), mask: \(mask)")
+                return
+            }
+            if !body(item) {
+                return
+            }
+            i += 1
+        }
+    }
+
     public func search(where predicate: (Item) -> Bool) -> [Item] {
         condition.lock()
         defer { condition.unlock() }
@@ -168,6 +199,33 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         _buffer = newBacking
         maxCount = newCapacity
         mask = UInt(maxCount - 1)
+    }
+}
+
+extension CircularBuffer where Item: AnyObject {
+    func drain(upTo item: Item) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed {
+            return false
+        }
+        var index = headIndex
+        while index != tailIndex, _buffer[Int(index & mask)] !== item {
+            index &+= 1
+        }
+        if index == tailIndex {
+            return false
+        }
+        var popped = 0
+        while headIndex != index {
+            _buffer[Int(headIndex & mask)] = nil
+            headIndex &+= 1
+            popped += 1
+        }
+        if popped > 0 {
+            condition.broadcast()
+        }
+        return true
     }
 }
 
