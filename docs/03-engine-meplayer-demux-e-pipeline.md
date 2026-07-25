@@ -136,12 +136,19 @@ O `ProAVPlayer` é o terceiro engine do fork. Ele **não decodifica nada**: usa 
 | Caso | `codecTag` | `CODECS` | `VIDEO-RANGE` | `SUPPLEMENTAL-CODECS` |
 |---|---|---|---|---|
 | DV perfil 5, e perfil 8 com compat id 1 | `dvh1` | `dvh1.PP.LL` | `PQ` | — |
+| DV perfil 8 com compat id 2 | `hvc1` | `hvc1.…` | `SDR` | `dvh1.PP.LL/db2g` |
 | DV perfil 8 com compat id 4 | `hvc1` | `hvc1.…` | `HLG` | `dvh1.PP.LL/db4h` |
 | DV perfil 7, com `options.convertDolbyVisionProfile7` (default ligado) | `dvh1` | `dvh1.08.LL` | `PQ` | — |
 | Outros perfis DV (e perfil 7 com a opção desligada) | — | recusa (`nil`) | — | — |
 | Sem DV | `hvc1` | `hvc1.…` | por `color_trc`: `PQ` (HDR10), `HLG` (ARIB B67), senão `SDR` | — |
 
-Áudio, por `ProAVAudioStrategy`: EC-3, AC-3, AAC, FLAC e ALAC passam por **stream copy**; qualquer outro codec (DTS, TrueHD, PCM, Opus…) é **transcodificado para FLAC** por `ProAVAudioTranscoder` (S16 ou S32/24 bits, sample rate e layout de canais preservados, PTS regenerado por contagem de amostras). Se o transcoder não puder inicializar, a trilha de áudio é simplesmente descartada.
+A brand do `SUPPLEMENTAL-CODECS` e o `VIDEO-RANGE` são cross-checks um do outro: `db1p`↔`PQ`, `db2g`↔`SDR`, `db4h`↔`HLG`. O appendix da HLS Authoring Specification documenta `db1p` e `db4h`; `db2g` vem da spec Dolby "DV Streams within the ISO BMFF" e segue a mesma regra de cross-check.
+
+Quando o vídeo é HEVC PQ **sem** Dolby Vision, o remux ainda procura metadado dinâmico HDR10+ antes de escrever a master playlist — ver "HDR10+ dinâmico" abaixo.
+
+Áudio, por `ProAVAudioStrategy`: EC-3, AC-3, AAC, FLAC e ALAC passam por **stream copy**; qualquer outro codec (DTS, TrueHD, PCM, Opus…) é **transcodificado para FLAC** por `ProAVAudioTranscoder` (S16 ou S32/24 bits, layout de canais preservado, sample rate limitado a 48 kHz — acima disso o `AudioSwresample` reamostra, porque o Apple TV entrega no máximo 48 kHz por HDMI —, PTS regenerado por contagem de amostras na taxa de saída). Se o transcoder não puder inicializar, a trilha de áudio é simplesmente descartada. O cap de 48 kHz não alcança o caminho de stream copy: um FLAC ou ALAC de 96 kHz na fonte continua 96 kHz no HLS.
+
+Em AAC, a string do `CODECS` sai do `codecpar.profile`: `mp4a.40.5` para HE-AAC v1, `mp4a.40.29` para HE-AAC v2, `mp4a.40.2` para o resto.
 
 A trilha de áudio também é anunciada na master playlist, como uma rendition `#EXT-X-MEDIA:TYPE=AUDIO` sem `URI` (o áudio está muxado na própria variante) referenciada por `AUDIO="main"`. O `CHANNELS` vem de `ch_layout.nb_channels`, **exceto** em E-AC-3 cujo `codecpar.profile` é `AV_PROFILE_EAC3_DDP_ATMOS`: aí o valor é `16/JOC`, que é como a HLS Authoring Specification pede para DD+ com Atmos. Quando a sondagem não fecha a contagem de canais (`nb_channels == 0`), o atributo é **omitido** em vez de sair como `CHANNELS="0"`.
 
@@ -153,6 +160,19 @@ Perfil 7 é dual-layer (base layer + enhancement layer + RPU) e não tem sample 
 2. O side data `AV_PKT_DATA_DOVI_CONF` do stream de **saída** é sobrescrito (`profile = 8`, `dv_bl_signal_compatibility_id = 1`, `el_present_flag = 0`, `dv_md_compression = 0`; major/minor/level/`rpu_present_flag`/`bl_present_flag` preservados da fonte). Como `dv_profile > 7`, o movenc escreve `dvvC` — não `dvcC`.
 3. Cada packet de vídeo passa por `DOVIPacketRewriter.rewrite(packet:nalLengthSize:)`, que percorre as NAL units length-prefixed, **descarta** as de tipo 63 (enhancement layer) e converte as de tipo 62 (RPU) com o libdovi vendorizado (`dovi_parse_unspec62_nalu` → `dovi_convert_rpu_with_mode(_, 2)` → `dovi_write_unspec62_nalu`). O modo 2 é o de perfil 8.1 com as curvas de mapping luma/chroma zeradas (no-op); o buffer devolvido pela lib já vem escapado para HEVC e com o header `0x7C01` na frente, então é escrito verbatim, só com o prefixo de tamanho recalculado. A reescrita acontece sobre a referência de saída — o packet do demuxer nunca é mutado.
 4. Qualquer erro do walker ou do libdovi derruba a sessão (`onFailure` → fallback), e se nenhum RPU tiver sido convertido até o primeiro corte de fragmento a sessão também falha — para não anunciar Dolby Vision sobre um stream sem metadata dinâmica. Uma vez falhada a sessão, `writeProAVPacket` sai antes de tocar no output (`session.isFailed`): nada mais é escrito e nenhum segmento novo é anunciado na media playlist, porque o `onFailure` chega na main thread de forma assíncrona e a thread de leitura continuaria demuxando nesse meio-tempo.
+
+### HDR10+ dinâmico
+
+Um HEVC PQ sem Dolby Vision pode carregar metadado dinâmico ST 2094-40, que sobrevive intacto ao stream copy mas não é anunciado por `VIDEO-RANGE=PQ` sozinho. A WWDC 2024 definiu a sinalização: `SUPPLEMENTAL-CODECS="<string HEVC>/cdm4"`, com a brand `cdm4` do CTA-5001.
+
+A detecção acontece dentro da janela que o `+delay_moov` abre — o muxer não emite nada até o primeiro corte de fragmento, então todos os packets do primeiro segmento já passaram por `writeProAVPacket` quando `completeInitSegmentLocked` escreve a master playlist:
+
+1. `startProAVRemux` só arma o scan quando `ProAVVideoSignaling.addingDynamicHDR10Plus()` mudaria alguma coisa — ou seja, `codecTag == "hvc1"`, `VIDEO-RANGE=PQ` e nenhum `SUPPLEMENTAL-CODECS`. Isso exclui estruturalmente todo Dolby Vision, então conteúdo dual-layer continua anunciando DV e ignorando o HDR10+.
+2. Caminho barato primeiro: se o demuxer já publicou `AV_PKT_DATA_DYNAMIC_HDR10_PLUS` no `coded_side_data` do stream, a sessão é avisada na hora. Senão, o scan por packet olha o side data do packet e depois cai em `ProAVHDR10PlusScanner.containsHDR10Plus`, que percorre as NAL units length-prefixed, filtra as SEI de prefixo (tipo 39), desfaz o emulation prevention e casa payload type 4 com `itu_t_t35_country_code == 0xB5`, terminal provider `0x003C`, provider oriented `0x0001` e application identifier `4`.
+3. Ao primeiro acerto o scan se desarma e `ProAVRemuxSession.noteDynamicHDR10Plus()` levanta a flag. `completeInitSegmentLocked` aplica `addingDynamicHDR10Plus()` na hora de escrever a master, e acrescenta `cdm4` às compatible brands do `ftyp` do init segment (o CTA-5001 pede a brand no container também). Se o `ftyp` não parsear, o init segment original é gravado como está — a sessão nunca cai por isso.
+4. Com a flag desligada nenhum desses caminhos muda nada: a playlist e o init segment saem byte-idênticos ao que sairiam antes.
+
+O que a brand faz de fato no tone mapping do tvOS **ainda não foi validado em hardware**.
 
 ### Pegadinhas do ProAV
 
