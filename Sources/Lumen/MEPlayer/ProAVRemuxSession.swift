@@ -30,6 +30,8 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     private var resolution = CGSize.zero
     private var frameRate = Float(0)
     private var currentHandle: FileHandle?
+    private var initScanner = ProAVInitBoundaryScanner()
+    private var initBoundaryFound = false
     private var segments = [ProAVSegment]()
     private var segmentIndex = 0
     private var segmentStart: Double?
@@ -123,20 +125,6 @@ public final class ProAVRemuxSession: @unchecked Sendable {
 
     func releaseIOContext() {
         withLock { releaseIOContextLocked() }
-    }
-
-    func finishInitSegment() {
-        withLock {
-            guard let signaling = _videoSignaling else {
-                failLocked(NSError(description: "ProAV signaling missing"))
-                return
-            }
-            currentHandle?.proAVClose()
-            let master = ProAVPlaylist.master(mediaPlaylistName: Self.mediaPlaylistName, video: signaling, audioCodecsAttribute: audioCodecsAttribute, bandwidth: bandwidth, resolution: resolution, frameRate: frameRate)
-            writeLocked(text: master, to: masterURL)
-            currentHandle = openFileLocked(named: segmentFileName(index: segmentIndex))
-            currentSegmentBytes = 0
-        }
     }
 
     func shouldCutSegment(at seconds: Double) -> Bool {
@@ -294,8 +282,23 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     private func write(buffer: UnsafePointer<UInt8>?, size: Int32) -> Int32 {
         withLock {
             guard let buffer, size > 0 else { return size }
-            guard !failed, let currentHandle else { return size }
+            guard !failed else { return size }
             let data = Data(bytes: buffer, count: Int(size))
+            if !initBoundaryFound {
+                switch initScanner.consume(data) {
+                case .buffering:
+                    return size
+                case .malformed:
+                    failLocked(NSError(description: "ProAV init segment boundary not found"))
+                    return -1
+                case let .split(initSegment, remainder):
+                    return completeInitSegmentLocked(initSegment: initSegment, remainder: remainder) ? size : -1
+                }
+            }
+            guard let currentHandle else {
+                failLocked(NSError(description: "ProAV segment handle missing"))
+                return -1
+            }
             guard currentHandle.proAVWrite(data) else {
                 failLocked(NSError(description: "ProAV segment write failed"))
                 return -1
@@ -303,5 +306,35 @@ public final class ProAVRemuxSession: @unchecked Sendable {
             currentSegmentBytes += Int64(size)
             return size
         }
+    }
+
+    private func completeInitSegmentLocked(initSegment: Data, remainder: Data) -> Bool {
+        guard let signaling = _videoSignaling else {
+            failLocked(NSError(description: "ProAV signaling missing"))
+            return false
+        }
+        guard let initHandle = currentHandle else {
+            failLocked(NSError(description: "ProAV init segment handle missing"))
+            return false
+        }
+        guard initHandle.proAVWrite(initSegment) else {
+            failLocked(NSError(description: "ProAV init segment write failed"))
+            return false
+        }
+        initHandle.proAVClose()
+        currentHandle = nil
+        initBoundaryFound = true
+        let master = ProAVPlaylist.master(mediaPlaylistName: Self.mediaPlaylistName, video: signaling, audioCodecsAttribute: audioCodecsAttribute, bandwidth: bandwidth, resolution: resolution, frameRate: frameRate)
+        writeLocked(text: master, to: masterURL)
+        guard !failed else { return false }
+        guard let segmentHandle = openFileLocked(named: segmentFileName(index: segmentIndex)) else { return false }
+        currentHandle = segmentHandle
+        currentSegmentBytes = 0
+        guard remainder.isEmpty || segmentHandle.proAVWrite(remainder) else {
+            failLocked(NSError(description: "ProAV segment write failed"))
+            return false
+        }
+        currentSegmentBytes += Int64(remainder.count)
+        return true
     }
 }

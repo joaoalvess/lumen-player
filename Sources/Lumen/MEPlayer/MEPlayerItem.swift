@@ -26,6 +26,9 @@ public final class MEPlayerItem: Sendable {
     private var remuxTranscodeStreamIndex: Int?
     private var remuxCompleted = false
     private var remuxHeaderWritten = false
+    private var remuxMoovWritten = false
+    private var remuxStreamsAwaitingFirstPacket = Set<Int>()
+    private var remuxFirstCutDeferredAt: Double?
     private var openOperation: BlockOperation?
     private var readOperation: BlockOperation?
     private var closeOperation: BlockOperation?
@@ -363,7 +366,7 @@ extension MEPlayerItem {
             return
         }
         outputFormatCtx.pointee.pb = ioContext
-        let movDictionary: [String: Any] = ["movflags": "+empty_moov+default_base_moof+frag_custom+skip_sidx"]
+        let movDictionary: [String: Any] = ["movflags": "+empty_moov+delay_moov+default_base_moof+frag_custom+skip_sidx"]
         var avOptions = movDictionary.avOptions
         ret = avformat_write_header(outputFormatCtx, &avOptions)
         av_dict_free(&avOptions)
@@ -372,10 +375,11 @@ extension MEPlayerItem {
             return
         }
         remuxHeaderWritten = true
-        if let pb = outputFormatCtx.pointee.pb {
-            avio_flush(pb)
-        }
-        session.finishInitSegment()
+        remuxMoovWritten = false
+        remuxFirstCutDeferredAt = nil
+        remuxStreamsAwaitingFirstPacket = Set(streamMapping.compactMap { inputIndex, outputIndex in
+            inputIndex == remuxTranscodeStreamIndex ? nil : outputIndex
+        })
         outputPacket = av_packet_alloc()
     }
 
@@ -403,7 +407,11 @@ extension MEPlayerItem {
             if timestamp != Int64.min {
                 let seconds = Timebase(inputStream.pointee.time_base).cmtime(for: timestamp).seconds
                 session.trackVideoTime(seconds: seconds)
-                if corePacket.pointee.flags & AV_PKT_FLAG_KEY != 0, session.shouldCutSegment(at: seconds) {
+                if corePacket.pointee.flags & AV_PKT_FLAG_KEY != 0, session.shouldCutSegment(at: seconds), canWriteRemuxFragment(at: seconds, session: session) {
+                    if !remuxMoovWritten {
+                        _ = av_write_frame(outputFormatCtx, nil)
+                        remuxMoovWritten = true
+                    }
                     _ = av_write_frame(outputFormatCtx, nil)
                     if let pb = outputFormatCtx.pointee.pb {
                         avio_flush(pb)
@@ -419,8 +427,20 @@ extension MEPlayerItem {
         let ret = av_write_frame(outputFormatCtx, outputPacket)
         if ret < 0 {
             KSLog("ProAV remux can not av_write_frame")
+        } else {
+            remuxStreamsAwaitingFirstPacket.remove(outputIndex)
         }
         av_packet_unref(outputPacket)
+    }
+
+    private func canWriteRemuxFragment(at seconds: Double, session: ProAVRemuxSession) -> Bool {
+        guard !remuxMoovWritten else { return true }
+        guard !remuxStreamsAwaitingFirstPacket.isEmpty else { return true }
+        guard let deferredAt = remuxFirstCutDeferredAt else {
+            remuxFirstCutDeferredAt = seconds
+            return false
+        }
+        return seconds - deferredAt >= session.configuration.targetSegmentDuration
     }
 
     private func finishRemux(reachedEnd: Bool) {
