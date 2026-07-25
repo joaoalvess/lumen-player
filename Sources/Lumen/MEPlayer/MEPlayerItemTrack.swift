@@ -208,7 +208,10 @@ class SyncPlayerItemTrack<Frame: MEFrame>: PlayerItemTrackProtocol, CustomString
 }
 
 func packetWindowCovers(target: TimeInterval, head: ObjectQueueItem, tail: ObjectQueueItem, margin: TimeInterval = 1) -> Bool {
-    target > head.seconds && target <= tail.seconds - margin
+    guard head.timestamp != Int64.min, tail.timestamp != Int64.min else {
+        return false
+    }
+    return target > head.seconds && target <= tail.seconds - margin
 }
 
 final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
@@ -314,10 +317,12 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     }
 
     func canServeSeekFromBuffer(target: TimeInterval) -> Bool {
-        guard let edges = packetQueue.peekEdges() else {
+        guard let edges = packetQueue.peekEdges(),
+              packetWindowCovers(target: target, head: edges.head, tail: edges.tail)
+        else {
             return false
         }
-        return packetWindowCovers(target: target, head: edges.head, tail: edges.tail)
+        return startPacket(atOrBefore: target) != nil
     }
 
     func fastSeek(to time: TimeInterval, onFailure: @escaping () -> Void) {
@@ -349,7 +354,7 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
         let needsKeyFrame = mediaType == .video
         var chosen: Packet?
         packetQueue.scan { packet in
-            if packet.seconds <= target, !needsKeyFrame || packet.isKeyFrame {
+            if packet.timestamp != Int64.min, packet.seconds <= target, !needsKeyFrame || packet.isKeyFrame {
                 chosen = packet
             }
             return true

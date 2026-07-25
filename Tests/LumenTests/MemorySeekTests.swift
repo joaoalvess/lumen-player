@@ -212,6 +212,14 @@ class MemorySeekTests: XCTestCase {
         XCTAssertFalse(packetWindowCovers(target: 60, head: head, tail: tail))
     }
 
+    func testWindowRejectsEdgesWithoutTimestamp() {
+        let unknownTimebase = Timebase(num: 1001, den: 24000)
+        let known = FakeQueueItem(timestamp: 5000, timebase: unknownTimebase)
+        let unknown = FakeQueueItem(timestamp: Int64.min, timebase: unknownTimebase)
+        XCTAssertFalse(packetWindowCovers(target: 20, head: unknown, tail: known))
+        XCTAssertFalse(packetWindowCovers(target: 20, head: known, tail: unknown))
+    }
+
     func testWindowMarginIsConfigurable() {
         let head = FakeQueueItem(timestamp: 5000, timebase: videoTimebase)
         let tail = FakeQueueItem(timestamp: 35000, timebase: videoTimebase)
