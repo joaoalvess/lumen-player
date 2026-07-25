@@ -20,6 +20,8 @@ public final class ProAVRemuxSession: @unchecked Sendable {
 
     let configuration: Configuration
     private let lock = NSLock()
+    private let progressLock = NSLock()
+    private var _closedDuration = TimeInterval(0)
     private var pendingEvents = [() -> Void]()
     private var _preferredAudioTrackID: Int32?
     private var _onReady: ((URL) -> Void)?
@@ -87,7 +89,9 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     }
 
     var closedSegmentsDuration: TimeInterval {
-        withLock { segments.map(\.duration).reduce(0, +) }
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        return _closedDuration
     }
 
     func begin(signaling: ProAVVideoSignaling, audioSignaling: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {
@@ -254,6 +258,9 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         currentHandle = nil
         segments.append(ProAVSegment(fileName: segmentFileName(index: segmentIndex), duration: duration))
         segmentIndex += 1
+        progressLock.lock()
+        _closedDuration += duration
+        progressLock.unlock()
     }
 
     private func writeMediaPlaylistLocked(ended: Bool) {
