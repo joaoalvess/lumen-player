@@ -597,8 +597,11 @@ extension MEPlayerItem {
             while state == .paused {
                 condition.wait()
             }
-            let forceNetworkSeek = memorySeekNeedsNetwork
-            memorySeekNeedsNetwork = false
+            var forceNetworkSeek = false
+            if state == .seeking {
+                forceNetworkSeek = memorySeekNeedsNetwork
+                memorySeekNeedsNetwork = false
+            }
             condition.unlock()
             if state == .seeking {
                 if !forceNetworkSeek, !seekByBytes, options.isMemorySeekEnabled,
@@ -608,22 +611,26 @@ extension MEPlayerItem {
                     let time = mainClock().time
                     let increaseSeconds = seekToTime + startTime.seconds - time.seconds
                     if increaseSeconds > 0, serveSeekFromMemory(target: seekToTime + startTime.seconds) {
-                        KSLog("seek to \(seekToTime) served from memory")
                         if state == .closed {
                             break
                         }
-                        if seekToTime != seekTime {
-                            continue
+                        condition.lock()
+                        let committed = !memorySeekNeedsNetwork && seekToTime == seekTime
+                        if committed {
+                            state = .reading
                         }
-                        isSeek = true
-                        DispatchQueue.main.async { [weak self] in
-                            guard let self else { return }
-                            self.seekingCompletionHandler?(true)
-                            self.seekingCompletionHandler = nil
+                        condition.unlock()
+                        if committed {
+                            KSLog("seek to \(seekToTime) served from memory")
+                            isSeek = true
+                            DispatchQueue.main.async { [weak self] in
+                                guard let self else { return }
+                                self.seekingCompletionHandler?(true)
+                                self.seekingCompletionHandler = nil
+                            }
+                            audioClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
+                            videoClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
                         }
-                        audioClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
-                        videoClock.time = CMTime(seconds: seekToTime, preferredTimescale: time.timescale) + startTime
-                        state = .reading
                         continue
                     } else {
                         KSLog("memory seek miss for \(seekToTime)")
