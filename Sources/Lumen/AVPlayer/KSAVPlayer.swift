@@ -550,9 +550,13 @@ extension KSAVPlayer: MediaPlayerProtocol {
         pending.timeout?.cancel()
         let previousAsset = urlAsset
         let previousLoader = cacheResourceLoader
+        let resumeTime = player.currentTime()
         urlAsset = pending.asset
         cacheResourceLoader = pending.loader
         player.advanceToNextItem()
+        if resumeTime.isNumeric, resumeTime.seconds > 0 {
+            player.seek(to: resumeTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
         options = pending.options
         updateStatus(item: pending.item)
         previousAsset.cancelLoading()
