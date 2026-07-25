@@ -79,6 +79,7 @@ open class KSOptions {
     public var autoDeInterlace = false
     public var autoRotate = true
     public var destinationDynamicRange: DynamicRange?
+    public var convertDolbyVisionProfile7 = true
     public var videoAdaptable = true
     public var videoFilters = [String]()
     public var syncDecodeVideo = false
