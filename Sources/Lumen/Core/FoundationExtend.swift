@@ -44,11 +44,14 @@ public extension String {
         let min = scanner.scanDouble() ?? 0.0
         _ = scanner.scanString(":")
         let sec = scanner.scanDouble() ?? 0.0
-        if scanner.scanString(",") == nil {
-            _ = scanner.scanString(".")
+        let seconds = (hour * 3600.0) + (min * 60.0) + sec
+        guard (scanner.scanString(",") ?? scanner.scanString(".")) != nil,
+              let digits = scanner.scanCharacters(from: .decimalDigits),
+              let fraction = Double(digits)
+        else {
+            return seconds
         }
-        let millisecond = scanner.scanDouble() ?? 0.0
-        return (hour * 3600.0) + (min * 60.0) + sec + (millisecond / 1000.0)
+        return seconds + fraction / pow(10.0, Double(digits.count))
     }
 
     func md5() -> String {

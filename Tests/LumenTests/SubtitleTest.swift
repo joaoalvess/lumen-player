@@ -160,6 +160,30 @@ class SubtitleTest: XCTestCase {
         XCTAssertNil(text.attribute(.font, at: 0, effectiveRange: nil))
     }
 
+    func testParseDurationReadsTheFractionByItsDigitCount() {
+        let cases: [(String, TimeInterval)] = [
+            ("0:12:37.73", 757.73),
+            ("0:12:37.7", 757.7),
+            ("0:12:37.730", 757.73),
+            ("0:12:37", 757),
+            (" 0:12:38.83", 758.83),
+            ("0:30:11.56", 1811.56),
+            ("00:12:37,184", 757.184),
+            ("00:12:37,18", 757.18),
+            ("00:12:37,1", 757.1),
+            ("00:12:37", 757),
+            ("01:00:01,140", 3601.14),
+            ("00:00:00,050", 0.05),
+            (" 00:00:53,617", 53.617),
+            ("00:12:37.184", 757.184),
+            ("00:00.430", 0.43),
+            ("00:03.380", 3.38),
+        ]
+        for (string, expected) in cases {
+            XCTAssertEqual(string.parseDuration(), expected, accuracy: 0.0005, string)
+        }
+    }
+
     func testTickKeepsTheFontTheParserSet() throws {
         let parsedFont = UIFont.systemFont(ofSize: 12)
         let text = NSMutableAttributedString(string: "Hello")
