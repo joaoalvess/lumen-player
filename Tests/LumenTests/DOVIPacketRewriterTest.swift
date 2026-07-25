@@ -90,6 +90,25 @@ class DOVIPacketRewriterTest: XCTestCase {
         }
     }
 
+    func testConvertRPUNALUnitRejectsBytesThatAreNotAnRPU() {
+        XCTAssertNil(DOVIPacketRewriter.convertRPUNALUnitToProfile81(Data([0x7C, 0x01, 0x19])))
+        XCTAssertNil(DOVIPacketRewriter.convertRPUNALUnitToProfile81(Data(nalUnit(type: 62, body: [UInt8](repeating: 0xAA, count: 30)))))
+    }
+
+    func testRewritePacketFailsWhenTheRPUCanNotBeConverted() throws {
+        let vcl = nalUnit(type: 1, body: [0xAA, 0xBB])
+        let rpu = nalUnit(type: 62, body: [UInt8](repeating: 0xAA, count: 30))
+        let input = payload(of: [vcl, rpu], lengthSize: 4)
+        var allocated = try makePacket(payload: input)
+        defer { av_packet_free(&allocated) }
+        let packet = try XCTUnwrap(allocated)
+        XCTAssertThrowsError(try DOVIPacketRewriter.rewrite(packet: packet, nalLengthSize: 4)) { error in
+            XCTAssertEqual(error as? DOVIPacketRewriteError, .rpuConversionFailed)
+        }
+        XCTAssertEqual(Int(packet.pointee.size), input.count)
+        XCTAssertEqual(try payloadBytes(of: packet), input)
+    }
+
     func testRewriteConvertsRPUDropsEnhancementLayerAndCopiesOthers() throws {
         let vcl = nalUnit(type: 1, body: [0xAA, 0xBB, 0xCC])
         let enhancementLayer = nalUnit(type: 63, body: [0x01, 0x02, 0x03, 0x04])
