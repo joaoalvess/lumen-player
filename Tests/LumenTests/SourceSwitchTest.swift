@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 @testable import Lumen
 import XCTest
 
