@@ -53,7 +53,8 @@ class ProAVRemuxSessionTest: XCTestCase {
     func testPlaylistStartIsTheKeyframeTheRemuxLandedOn() throws {
         let session = try XCTUnwrap(makeSession())
         _ = session.shouldCutSegment(at: 1792)
-        XCTAssertEqual(try XCTUnwrap(session.playlistStartSeconds), 1792, accuracy: 0.0001)
+        let start = try XCTUnwrap(session.playlistStartSeconds)
+        XCTAssertEqual(start, 1792, accuracy: 0.0001)
         session.finish(reachedEnd: false)
     }
 
@@ -62,7 +63,8 @@ class ProAVRemuxSessionTest: XCTestCase {
         _ = session.shouldCutSegment(at: 1792)
         session.closeSegment(nextStartTime: 1794)
         session.closeSegment(nextStartTime: 1796)
-        XCTAssertEqual(try XCTUnwrap(session.playlistStartSeconds), 1792, accuracy: 0.0001)
+        let start = try XCTUnwrap(session.playlistStartSeconds)
+        XCTAssertEqual(start, 1792, accuracy: 0.0001)
         session.finish(reachedEnd: false)
     }
 
