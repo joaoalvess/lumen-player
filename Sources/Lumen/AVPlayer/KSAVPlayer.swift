@@ -488,9 +488,7 @@ extension KSAVPlayer: MediaPlayerProtocol {
     public func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
         abandonPendingSourceSwitch()
         guard !options.isLoopPlay, playerLooper == nil, let currentItem = player.currentItem else {
-            replace(url: url, options: options)
-            prepareToPlay()
-            completion(true)
+            completion(false)
             return
         }
         let (asset, loader) = KSAVPlayer.makeAsset(url: url, options: options)
@@ -503,14 +501,6 @@ extension KSAVPlayer: MediaPlayerProtocol {
             return
         }
         var pending = PendingSourceSwitch(item: candidate, asset: asset, loader: loader, options: options, completion: completion)
-        pending.statusObservation = candidate.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-            guard let self else { return }
-            if item.status == .readyToPlay {
-                self.commitPendingSourceSwitch()
-            } else if item.status == .failed {
-                self.abandonPendingSourceSwitch()
-            }
-        }
         let timeout = DispatchWorkItem { [weak self] in
             self?.abandonPendingSourceSwitch()
         }
@@ -518,10 +508,28 @@ extension KSAVPlayer: MediaPlayerProtocol {
         pendingSourceSwitch = pending
         player.insert(candidate, after: currentItem)
         DispatchQueue.main.asyncAfter(deadline: .now() + KSAVPlayer.sourceSwitchTimeout, execute: timeout)
+        let statusObservation = candidate.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard let self else { return }
+            if item.status == .readyToPlay {
+                self.commitPendingSourceSwitch()
+            } else if item.status == .failed {
+                self.abandonPendingSourceSwitch()
+            }
+        }
+        pendingSourceSwitch?.statusObservation = statusObservation
+    }
+
+    public func cancelSourceSwitch() {
+        abandonPendingSourceSwitch()
     }
 
     private func commitPendingSourceSwitch() {
         guard let pending = pendingSourceSwitch else { return }
+        let candidateTracks = pending.item.tracks.map { AVMediaPlayerTrack(track: $0) }
+        guard candidateTracks.contains(where: { $0.mediaType == .video && $0.isPlayable }) else {
+            abandonPendingSourceSwitch()
+            return
+        }
         pendingSourceSwitch = nil
         pending.statusObservation?.invalidate()
         pending.timeout?.cancel()
