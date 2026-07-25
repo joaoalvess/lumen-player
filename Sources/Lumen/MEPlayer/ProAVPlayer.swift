@@ -26,10 +26,30 @@ public final class ProAVPlayer {
     private var startOffset = TimeInterval(0)
     private var pendingSeekCompletion: ((Bool) -> Void)?
     private var launchIndex = 0
+    private var activeLaunchIndex = 0
+    private var delegateProxy: ProAVLaunchDelegateProxy?
+    private var pendingSourceSwitch: PendingSourceSwitch?
     private var preferredAudioTrackID: Int32?
     private var reportedReady = false
     private var didFail = false
     public weak var delegate: MediaPlayerDelegate?
+
+    private struct RemuxLaunch {
+        let index: Int
+        let directoryName: String
+        let session: ProAVRemuxSession
+        let item: MEPlayerItem
+        let proxy: ProAVLaunchDelegateProxy
+    }
+
+    private struct PendingSourceSwitch {
+        let launch: RemuxLaunch
+        let url: URL
+        let options: KSOptions
+        let startOffset: TimeInterval
+        let completion: (Bool) -> Void
+        var innerSwitchStarted = false
+    }
 
     public required init(url: URL, options: KSOptions) {
         self.url = url
@@ -53,32 +73,40 @@ public final class ProAVPlayer {
         }
     }
 
-    private func startRemux(at time: TimeInterval) {
+    private func makeLaunch(url: URL, options: KSOptions, at time: TimeInterval) -> RemuxLaunch {
         launchIndex += 1
         let directoryName = "launch\(launchIndex)"
         let directory = workspaceURL.appendingPathComponent(directoryName)
         let configuration = ProAVRemuxSession.Configuration(directory: directory, targetSegmentDuration: ProAVPlayer.segmentDuration, minimumSegmentsBeforeReady: ProAVPlayer.minimumSegmentsBeforeReady)
         let session = ProAVRemuxSession(configuration: configuration)
         session.preferredAudioTrackID = preferredAudioTrackID
-        session.onReady = { [weak self, weak session] _ in
+        options.startPlayTime = time
+        let item = MEPlayerItem(url: url, options: options, remuxSession: session)
+        let proxy = ProAVLaunchDelegateProxy(target: self, launch: launchIndex)
+        item.delegate = proxy
+        return RemuxLaunch(index: launchIndex, directoryName: directoryName, session: session, item: item, proxy: proxy)
+    }
+
+    private func startRemux(at time: TimeInterval) {
+        let launch = makeLaunch(url: url, options: options, at: time)
+        launch.session.onReady = { [weak self, weak session = launch.session, directoryName = launch.directoryName] _ in
             runOnMainThread {
                 guard let self, let session, self.session === session else { return }
                 self.remuxDidBecomeReady(directoryName: directoryName)
             }
         }
-        session.onFailure = { [weak self, weak session] sessionError in
+        launch.session.onFailure = { [weak self, weak session = launch.session] sessionError in
             runOnMainThread {
                 guard let self, let session, self.session === session else { return }
                 self.fail(error: sessionError)
             }
         }
-        self.session = session
+        session = launch.session
+        remuxItem = launch.item
+        delegateProxy = launch.proxy
+        activeLaunchIndex = launch.index
         startOffset = time
-        options.startPlayTime = time
-        let item = MEPlayerItem(url: url, options: options, remuxSession: session)
-        item.delegate = self
-        remuxItem = item
-        item.prepareToPlay()
+        launch.item.prepareToPlay()
     }
 
     private func remuxDidBecomeReady(directoryName: String) {
@@ -124,6 +152,7 @@ public final class ProAVPlayer {
     }
 
     private func fail(error: NSError) {
+        abortPendingSourceSwitch()
         guard !didFail else { return }
         didFail = true
         let seekCompletion = pendingSeekCompletion
@@ -139,6 +168,7 @@ public final class ProAVPlayer {
     }
 
     private func restart(at time: TimeInterval, completion: ((Bool) -> Void)?) {
+        abortPendingSourceSwitch()
         let previousCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
         previousCompletion?(false)
@@ -149,6 +179,76 @@ public final class ProAVPlayer {
         remuxItem?.shutdown()
         session?.requestCleanup()
         startRemux(at: time)
+    }
+
+    private func pendingSourceSwitchDidBecomeReady() {
+        guard let pending = pendingSourceSwitch else { return }
+        guard let serverBaseURL else {
+            abortPendingSourceSwitch()
+            return
+        }
+        let masterURL = serverBaseURL.appendingPathComponent(pending.launch.directoryName).appendingPathComponent(ProAVRemuxSession.masterPlaylistName)
+        pendingSourceSwitch?.innerSwitchStarted = true
+        innerPlayer.switchSource(url: masterURL, options: pending.options) { [weak self] success in
+            runOnMainThread {
+                guard let self, self.pendingSourceSwitch?.launch.session === pending.launch.session else { return }
+                if success {
+                    self.commitPendingSourceSwitch()
+                } else {
+                    self.abortPendingSourceSwitch()
+                }
+            }
+        }
+    }
+
+    private func commitPendingSourceSwitch() {
+        guard let pending = pendingSourceSwitch else { return }
+        pendingSourceSwitch = nil
+        let previousSession = session
+        let previousItem = remuxItem
+        let previousDynamicRange = previousSession?.videoSignaling?.preferredDynamicRange
+        previousItem?.delegate = nil
+        url = pending.url
+        options = pending.options
+        session = pending.launch.session
+        remuxItem = pending.launch.item
+        delegateProxy = pending.launch.proxy
+        activeLaunchIndex = pending.launch.index
+        startOffset = pending.startOffset
+        pending.launch.session.onReady = nil
+        pending.launch.session.onFailure = { [weak self, weak session = pending.launch.session] sessionError in
+            runOnMainThread {
+                guard let self, let session, self.session === session else { return }
+                self.fail(error: sessionError)
+            }
+        }
+        previousItem?.shutdown()
+        previousSession?.requestCleanup()
+        if session?.videoSignaling?.preferredDynamicRange != previousDynamicRange {
+            applyDisplayCriteria()
+        }
+        pending.completion(true)
+    }
+
+    private func abortPendingSourceSwitch() {
+        guard let pending = pendingSourceSwitch else { return }
+        pendingSourceSwitch = nil
+        if pending.innerSwitchStarted {
+            innerPlayer.abandonPendingSourceSwitch()
+        }
+        pending.launch.item.delegate = nil
+        pending.launch.item.shutdown()
+        pending.launch.session.requestCleanup()
+        pending.completion(false)
+    }
+
+    fileprivate func launchDidFail(index: Int, error: NSError?) {
+        if let pending = pendingSourceSwitch, pending.launch.index == index {
+            abortPendingSourceSwitch()
+            return
+        }
+        guard index == activeLaunchIndex else { return }
+        fail(error: error ?? NSError(errorCode: .formatOpenInput))
     }
 }
 
@@ -228,7 +328,34 @@ extension ProAVPlayer: MediaPlayerProtocol {
         innerPlayer.pause()
     }
 
+    public func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
+        abortPendingSourceSwitch()
+        guard !didFail, reportedReady, session != nil, serverBaseURL != nil else {
+            replace(url: url, options: options)
+            prepareToPlay()
+            completion(true)
+            return
+        }
+        let time = currentPlaybackTime
+        let launch = makeLaunch(url: url, options: options, at: time)
+        pendingSourceSwitch = PendingSourceSwitch(launch: launch, url: url, options: options, startOffset: time, completion: completion)
+        launch.session.onReady = { [weak self, weak session = launch.session] _ in
+            runOnMainThread {
+                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
+                self.pendingSourceSwitchDidBecomeReady()
+            }
+        }
+        launch.session.onFailure = { [weak self, weak session = launch.session] _ in
+            runOnMainThread {
+                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
+                self.abortPendingSourceSwitch()
+            }
+        }
+        launch.item.prepareToPlay()
+    }
+
     public func shutdown() {
+        abortPendingSourceSwitch()
         let seekCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
         seekCompletion?(false)
@@ -311,18 +438,27 @@ extension ProAVPlayer: MediaPlayerDelegate {
     }
 }
 
-extension ProAVPlayer: MEPlayerDelegate {
-    nonisolated func sourceDidChange(loadingState _: LoadingState) {}
+private final class ProAVLaunchDelegateProxy: MEPlayerDelegate {
+    private weak var target: ProAVPlayer?
+    private let launch: Int
 
-    nonisolated func sourceDidOpened() {}
+    init(target: ProAVPlayer, launch: Int) {
+        self.target = target
+        self.launch = launch
+    }
 
-    nonisolated func sourceDidFailed(error: NSError?) {
+    func sourceDidChange(loadingState _: LoadingState) {}
+
+    func sourceDidOpened() {}
+
+    func sourceDidFailed(error: NSError?) {
         runOnMainThread { [weak self] in
-            self?.fail(error: error ?? NSError(errorCode: .formatOpenInput))
+            guard let self, let target = self.target else { return }
+            target.launchDidFail(index: self.launch, error: error)
         }
     }
 
-    nonisolated func sourceDidFinished() {}
+    func sourceDidFinished() {}
 
-    nonisolated func sourceDidChange(oldBitRate _: Int64, newBitrate _: Int64) {}
+    func sourceDidChange(oldBitRate _: Int64, newBitrate _: Int64) {}
 }

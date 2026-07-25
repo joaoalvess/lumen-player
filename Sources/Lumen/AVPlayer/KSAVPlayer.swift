@@ -537,7 +537,7 @@ extension KSAVPlayer: MediaPlayerProtocol {
         pending.completion(true)
     }
 
-    private func abandonPendingSourceSwitch() {
+    func abandonPendingSourceSwitch() {
         guard let pending = pendingSourceSwitch else { return }
         pendingSourceSwitch = nil
         pending.statusObservation?.invalidate()
