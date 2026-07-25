@@ -666,6 +666,7 @@ extension MEPlayerItem {
                 }
                 let seekMin = increase > 0 ? timeStamp - increase + 2 : Int64.min
                 let seekMax = increase < 0 ? timeStamp - increase - 2 : Int64.max
+                allPlayerItemTracks.forEach { $0.seek(time: seekToTime) }
                 // can not seek to key frame
                 let seekStartTime = CACurrentMediaTime()
                 var result = avformat_seek_file(formatCtx, -1, seekMin, timeStamp, seekMax, seekFlags)
@@ -687,7 +688,6 @@ extension MEPlayerItem {
                     continue
                 }
                 isSeek = true
-                allPlayerItemTracks.forEach { $0.seek(time: seekToTime) }
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.seekingCompletionHandler?(result >= 0)
@@ -774,7 +774,7 @@ extension MEPlayerItem {
         condition.unlock()
     }
 
-    private func serveSeekFromMemory(target: TimeInterval) -> Bool {
+    private func canServeSeekFromMemory(target: TimeInterval) -> Bool {
         let asyncVideoTrack = videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>
         let asyncAudioTrack = audioTrack as? AsyncPlayerItemTrack<AudioFrame>
         if videoTrack != nil, asyncVideoTrack == nil {
@@ -792,10 +792,28 @@ extension MEPlayerItem {
         if let asyncAudioTrack, !asyncAudioTrack.canServeSeekFromBuffer(target: target) {
             return false
         }
-        asyncVideoTrack?.fastSeek(to: target) { [weak self] in
+        return true
+    }
+
+    private func isMemorySeekEligible(time: TimeInterval) -> Bool {
+        guard !seekByBytes, options.isMemorySeekEnabled, allPlayerItemTracks.allSatisfy({ !$0.isLoopModel }) else {
+            return false
+        }
+        let target = time + startTime.seconds
+        guard target - mainClock().time.seconds > 0 else {
+            return false
+        }
+        return canServeSeekFromMemory(target: target)
+    }
+
+    private func serveSeekFromMemory(target: TimeInterval) -> Bool {
+        guard canServeSeekFromMemory(target: target) else {
+            return false
+        }
+        (videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>)?.fastSeek(to: target) { [weak self] in
             self?.handleMemorySeekFailure()
         }
-        asyncAudioTrack?.fastSeek(to: target) { [weak self] in
+        (audioTrack as? AsyncPlayerItemTrack<AudioFrame>)?.fastSeek(to: target) { [weak self] in
             self?.handleMemorySeekFailure()
         }
         return true
@@ -898,13 +916,14 @@ extension MEPlayerItem: MediaPlayback {
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
         if state == .reading || state == .paused {
+            let isEligible = isMemorySeekEligible(time: time)
             condition.lock()
             seekTime = time
             state = .seeking
             seekingCompletionHandler = completion
             condition.broadcast()
             condition.unlock()
-            if !options.isMemorySeekEnabled {
+            if !isEligible {
                 allPlayerItemTracks.forEach { $0.seek(time: time) }
             }
         } else if state == .finished {
