@@ -360,6 +360,9 @@ extension MEPlayerItem {
             } else {
                 KSLog("ProAV audio track skipped: flac transcode unavailable")
             }
+            if streamMapping[Int(audioAssetTrack.trackID)] != nil {
+                audios.forEach { $0.isEnabled = $0.trackID == audioAssetTrack.trackID }
+            }
         }
         let codecpar = videoAssetTrack.codecpar
         let resolution = CGSize(width: Int(codecpar.width), height: Int(codecpar.height))
