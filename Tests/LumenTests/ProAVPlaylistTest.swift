@@ -1,3 +1,4 @@
+import FFmpegKit
 import Libavcodec
 @testable import Lumen
 import XCTest
@@ -81,5 +82,73 @@ class ProAVPlaylistTest: XCTestCase {
         let strategy = ProAVAudioStrategy.make(codecpar: codecpar)
         XCTAssertFalse(strategy.copiesBitstream)
         XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "fLaC", channels: "8"))
+    }
+
+    private func withHEVCTrack(doviRecord record: [UInt8], perform: (FFmpegAssetTrack) -> Void) {
+        var sideData: UnsafeMutablePointer<AVPacketSideData>?
+        var sideDataCount = Int32(0)
+        guard let entry = av_packet_side_data_new(&sideData, &sideDataCount, AV_PKT_DATA_DOVI_CONF, record.count, 0),
+              let data = entry.pointee.data
+        else {
+            XCTFail("could not allocate the dovi side data")
+            return
+        }
+        defer { av_packet_side_data_free(&sideData, &sideDataCount) }
+        for index in 0 ..< record.count {
+            data[index] = record[index]
+        }
+        var codecpar = AVCodecParameters()
+        codecpar.codec_type = AVMEDIA_TYPE_VIDEO
+        codecpar.codec_id = AV_CODEC_ID_HEVC
+        codecpar.coded_side_data = sideData
+        codecpar.nb_coded_side_data = sideDataCount
+        guard let track = FFmpegAssetTrack(codecpar: codecpar) else {
+            XCTFail("could not create the hevc track")
+            return
+        }
+        perform(track)
+    }
+
+    func testProfile7TrackConvertsToProfile81Signaling() {
+        withHEVCTrack(doviRecord: [1, 0, 7, 6, 1, 1, 1, 6, 0]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: true) else {
+                XCTFail("profile 7 signaling refused with conversion enabled")
+                return
+            }
+            XCTAssertEqual(signaling.codecTag, "dvh1")
+            XCTAssertEqual(signaling.codecsAttribute, "dvh1.08.06")
+            XCTAssertEqual(signaling.videoRange, "PQ")
+            XCTAssertNil(signaling.supplementalCodecs)
+            XCTAssertEqual(signaling.preferredDynamicRange, .dolbyVision)
+            XCTAssertTrue(signaling.convertsDolbyVisionProfile7)
+            let master = ProAVPlaylist.master(mediaPlaylistName: "media.m3u8", video: signaling, audio: nil, bandwidth: 24_000_000, resolution: CGSize(width: 3840, height: 2160), frameRate: 23.976)
+            XCTAssertTrue(master.contains("CODECS=\"dvh1.08.06\""))
+            XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"))
+            XCTAssertFalse(master.contains("SUPPLEMENTAL-CODECS"))
+        }
+    }
+
+    func testProfile7TrackPreservesLevelInCodecsAttribute() {
+        withHEVCTrack(doviRecord: [1, 0, 7, 9, 1, 1, 1, 6, 0]) { track in
+            let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: true)
+            XCTAssertEqual(signaling?.codecsAttribute, "dvh1.08.09")
+        }
+    }
+
+    func testProfile7TrackRefusedWhenConversionDisabled() {
+        withHEVCTrack(doviRecord: [1, 0, 7, 6, 1, 1, 1, 6, 0]) { track in
+            XCTAssertNil(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false))
+        }
+    }
+
+    func testProfile81TrackDoesNotRequestConversion() {
+        withHEVCTrack(doviRecord: [1, 0, 8, 6, 1, 0, 1, 1, 0]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: true) else {
+                XCTFail("profile 8.1 signaling refused")
+                return
+            }
+            XCTAssertEqual(signaling.codecsAttribute, "dvh1.08.06")
+            XCTAssertFalse(signaling.convertsDolbyVisionProfile7)
+        }
     }
 }
