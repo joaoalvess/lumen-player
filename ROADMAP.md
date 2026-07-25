@@ -4,21 +4,13 @@ Where Lumen is going. No dates — this is roughly the order things are likely t
 
 ## Next
 
-### Atmos signaling in the remux
+### Instant backward seeks
 
-E-AC-3 already rides through the remux untouched — the Atmos data is in the stream. What's missing is the signaling that makes the system treat it as Atmos: the JOC complexity fields in the `dec3` box and the matching `CHANNELS` attribute in the playlist. The muxer half was blocked on an FFmpeg fix that landed in 8.0, and Lumen now ships 8.1 — so this is next in line, and small.
+Forward seeks that land inside the buffered window are already served straight from RAM, without a demuxer seek or a network round trip. The other half is a keyframe-aligned retention ring per track, so a short seek *backwards* is just as instant instead of a full reposition.
 
-### Dolby Vision dynamic metadata
+### Switching without the rewind
 
-Dolby Vision already reaches the TV through the remux engine, but the *dynamic* metadata doesn't: the RPU is dropped along the way, so the display falls back to static tone mapping. The plan is to preserve the `dvcC`/`dvvC` box and the RPU through the remux, so VideoToolbox applies Dolby's real per-scene tone mapping — and to convert profile 7 dual-layer into profile 8.1 single-layer while we're in there.
-
-### Instant stream switching
-
-Switching between two URLs of the same title — a different audio track, another quality, a fallback source — currently tears the player down and opens a new one, and you see it happen. Replacing that with prewarm and hot-swap should make the change seamless.
-
-### Memory cache for short seeks
-
-Around 30 seconds of data already sits in RAM and gets thrown away on every seek. Two layers to fix it: reuse the buffered window for forward seeks without touching the network, and keep a keyframe-aligned retention ring per track so short backward seeks are instant.
+Switching between two URLs of the same title no longer tears the player down: the next source is prepared in parallel and only swapped in when it is ready. Two things are still missing. On the remux engine the swap rewinds by however long the new remux took to warm up, because the target position is captured when the switch is requested rather than when it commits. And nothing prepares a candidate before the viewer asks for one — speculative prewarm from the source list is what would make the change feel instantaneous.
 
 ## Later
 
@@ -49,4 +41,4 @@ Subtitles are a SwiftUI overlay, so when video moves to the PiP window they stay
 
 ## Shipped
 
-The remux engine that switches the TV into real Dolby Vision, with E-AC-3/AC-3/AAC/FLAC/ALAC passthrough and TrueHD/DTS transcoded to FLAC; FFmpeg 8.1; Dolby Vision profile 5 colour on the FFmpeg engine; the byte-range disk cache; embedded subtitle fonts; scrub thumbnail previews; and the tvOS interface. See the [README](./README.md) for what works today.
+The remux engine that switches the TV into real Dolby Vision, with E-AC-3/AC-3/AAC/FLAC/ALAC passthrough and TrueHD/DTS transcoded to FLAC; the Atmos `dec3`/`CHANNELS` signaling and profile 7 converted to single-layer 8.1 on the way through the remux (both still waiting on a check against real hardware); opt-in hot source switching; forward seeks served from memory; FFmpeg 8.1; Dolby Vision profile 5 colour on the FFmpeg engine; the byte-range disk cache; embedded subtitle fonts; scrub thumbnail previews; and the tvOS interface. See the [README](./README.md) for what works today.
