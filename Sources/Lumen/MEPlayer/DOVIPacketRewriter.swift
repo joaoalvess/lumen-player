@@ -31,58 +31,62 @@ enum DOVIPacketRewriter {
         guard (1 ... 4).contains(nalLengthSize) else {
             throw DOVIPacketRewriteError.unsupportedNALLengthSize
         }
-        let bytes = [UInt8](payload)
-        let maxNALUnitLength = (1 << (8 * nalLengthSize)) - 1
-        var output = Data(capacity: bytes.count)
-        var wroteNALUnit = false
-        var offset = 0
-        while offset < bytes.count {
-            guard offset + nalLengthSize <= bytes.count else {
-                throw DOVIPacketRewriteError.truncatedLengthPrefix
+        return try payload.withUnsafeBytes { rawBuffer -> Data in
+            guard let bytes = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                throw DOVIPacketRewriteError.emptyRewrittenPayload
             }
-            var nalLength = 0
-            for index in 0 ..< nalLengthSize {
-                nalLength = (nalLength << 8) | Int(bytes[offset + index])
-            }
-            guard nalLength > 0 else {
-                throw DOVIPacketRewriteError.invalidNALUnitLength
-            }
-            let nalStart = offset + nalLengthSize
-            guard nalStart + nalLength <= bytes.count else {
-                throw DOVIPacketRewriteError.truncatedNALUnit
-            }
-            let nalType = (bytes[nalStart] >> 1) & 0x3F
-            offset = nalStart + nalLength
-            if nalType == enhancementLayerNALUnitType {
-                continue
-            }
-            let nalUnit = Data(bytes[nalStart ..< nalStart + nalLength])
-            let outputNALUnit: Data
-            if nalType == rpuNALUnitType {
-                guard let converted = transformRPUNALUnit(nalUnit), !converted.isEmpty else {
-                    throw DOVIPacketRewriteError.rpuConversionFailed
+            let count = rawBuffer.count
+            let maxNALUnitLength = (1 << (8 * nalLengthSize)) - 1
+            var output = Data(capacity: count)
+            var wroteNALUnit = false
+            var offset = 0
+            while offset < count {
+                guard offset + nalLengthSize <= count else {
+                    throw DOVIPacketRewriteError.truncatedLengthPrefix
                 }
-                outputNALUnit = converted
-            } else {
-                outputNALUnit = nalUnit
+                var nalLength = 0
+                for index in 0 ..< nalLengthSize {
+                    nalLength = (nalLength << 8) | Int(bytes[offset + index])
+                }
+                guard nalLength > 0 else {
+                    throw DOVIPacketRewriteError.invalidNALUnitLength
+                }
+                let nalStart = offset + nalLengthSize
+                guard nalStart + nalLength <= count else {
+                    throw DOVIPacketRewriteError.truncatedNALUnit
+                }
+                let nalType = (bytes[nalStart] >> 1) & 0x3F
+                offset = nalStart + nalLength
+                if nalType == enhancementLayerNALUnitType {
+                    continue
+                }
+                if nalType == rpuNALUnitType {
+                    let nalUnit = Data(bytes: bytes + nalStart, count: nalLength)
+                    guard let converted = transformRPUNALUnit(nalUnit), !converted.isEmpty else {
+                        throw DOVIPacketRewriteError.rpuConversionFailed
+                    }
+                    guard converted.count <= maxNALUnitLength else {
+                        throw DOVIPacketRewriteError.oversizedNALUnit
+                    }
+                    appendLengthPrefix(converted.count, nalLengthSize: nalLengthSize, to: &output)
+                    output.append(converted)
+                } else {
+                    appendLengthPrefix(nalLength, nalLengthSize: nalLengthSize, to: &output)
+                    output.append(bytes + nalStart, count: nalLength)
+                }
+                wroteNALUnit = true
             }
-            guard outputNALUnit.count <= maxNALUnitLength else {
-                throw DOVIPacketRewriteError.oversizedNALUnit
+            guard wroteNALUnit else {
+                throw DOVIPacketRewriteError.emptyRewrittenPayload
             }
-            var remaining = outputNALUnit.count
-            var prefix = [UInt8](repeating: 0, count: nalLengthSize)
-            for index in stride(from: nalLengthSize - 1, through: 0, by: -1) {
-                prefix[index] = UInt8(remaining & 0xFF)
-                remaining >>= 8
-            }
-            output.append(contentsOf: prefix)
-            output.append(outputNALUnit)
-            wroteNALUnit = true
+            return output
         }
-        guard wroteNALUnit else {
-            throw DOVIPacketRewriteError.emptyRewrittenPayload
+    }
+
+    private static func appendLengthPrefix(_ length: Int, nalLengthSize: Int, to output: inout Data) {
+        for shift in stride(from: (nalLengthSize - 1) * 8, through: 0, by: -8) {
+            output.append(UInt8((length >> shift) & 0xFF))
         }
-        return output
     }
 
     static func rewrite(packet: UnsafeMutablePointer<AVPacket>, nalLengthSize: Int) throws {
@@ -90,7 +94,7 @@ enum DOVIPacketRewriter {
         guard size > 0, let data = packet.pointee.data else {
             throw DOVIPacketRewriteError.missingPayload
         }
-        let payload = Data(bytes: data, count: size)
+        let payload = Data(bytesNoCopy: data, count: size, deallocator: .none)
         let rewritten = try rewrite(payload: payload, nalLengthSize: nalLengthSize, transformRPUNALUnit: convertRPUNALUnitToProfile81)
         guard let rewrittenSize = Int32(exactly: rewritten.count) else {
             throw DOVIPacketRewriteError.oversizedPayload
