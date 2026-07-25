@@ -162,4 +162,48 @@ class MemorySeekTests: XCTestCase {
         XCTAssertEqual(queue.pop(count: 0), 0)
         XCTAssertEqual(queue.count, 1)
     }
+
+    private let videoTimebase = Timebase(num: 1, den: 1000)
+    private let audioTimebase = Timebase(num: 1, den: 48000)
+
+    func testWindowCoversTargetInsideVideoWindow() {
+        let head = FakeQueueItem(timestamp: 5000, timebase: videoTimebase)
+        let tail = FakeQueueItem(timestamp: 35000, timebase: videoTimebase)
+        XCTAssertTrue(packetWindowCovers(target: 20, head: head, tail: tail))
+        XCTAssertTrue(packetWindowCovers(target: 34, head: head, tail: tail))
+    }
+
+    func testWindowCoversTargetInsideAudioWindow() {
+        let head = FakeQueueItem(timestamp: 240_000, timebase: audioTimebase)
+        let tail = FakeQueueItem(timestamp: 1_680_000, timebase: audioTimebase)
+        XCTAssertTrue(packetWindowCovers(target: 20, head: head, tail: tail))
+        XCTAssertTrue(packetWindowCovers(target: 34, head: head, tail: tail))
+    }
+
+    func testWindowRejectsTargetAtOrBeforeHead() {
+        let head = FakeQueueItem(timestamp: 5000, timebase: videoTimebase)
+        let tail = FakeQueueItem(timestamp: 35000, timebase: videoTimebase)
+        XCTAssertFalse(packetWindowCovers(target: 5, head: head, tail: tail))
+        XCTAssertFalse(packetWindowCovers(target: 4, head: head, tail: tail))
+    }
+
+    func testWindowRejectsTargetInsideTailMargin() {
+        let head = FakeQueueItem(timestamp: 240_000, timebase: audioTimebase)
+        let tail = FakeQueueItem(timestamp: 1_680_000, timebase: audioTimebase)
+        XCTAssertFalse(packetWindowCovers(target: 34.5, head: head, tail: tail))
+        XCTAssertFalse(packetWindowCovers(target: 35, head: head, tail: tail))
+    }
+
+    func testWindowRejectsTargetBeyondTail() {
+        let head = FakeQueueItem(timestamp: 5000, timebase: videoTimebase)
+        let tail = FakeQueueItem(timestamp: 35000, timebase: videoTimebase)
+        XCTAssertFalse(packetWindowCovers(target: 60, head: head, tail: tail))
+    }
+
+    func testWindowMarginIsConfigurable() {
+        let head = FakeQueueItem(timestamp: 5000, timebase: videoTimebase)
+        let tail = FakeQueueItem(timestamp: 35000, timebase: videoTimebase)
+        XCTAssertTrue(packetWindowCovers(target: 34.5, head: head, tail: tail, margin: 0))
+        XCTAssertFalse(packetWindowCovers(target: 34.5, head: head, tail: tail, margin: 2))
+    }
 }
