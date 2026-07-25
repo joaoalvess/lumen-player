@@ -30,6 +30,13 @@ class ProAVPlaylistTest: XCTestCase {
         XCTAssertTrue(master.contains("CHANNELS=\"2\""))
     }
 
+    func testMasterOmitsChannelsWhenCountIsUnknown() {
+        let master = makeMaster(audio: ProAVAudioSignaling(codecsAttribute: "ec-3", channels: nil))
+        XCTAssertTrue(master.contains("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"main\",NAME=\"Original\",DEFAULT=YES,AUTOSELECT=YES\n"))
+        XCTAssertFalse(master.contains("CHANNELS"))
+        XCTAssertTrue(master.contains("AUDIO=\"main\""))
+    }
+
     func testMasterWithoutAudio() {
         let master = makeMaster(audio: nil)
         XCTAssertFalse(master.contains("#EXT-X-MEDIA"))
@@ -56,6 +63,15 @@ class ProAVPlaylistTest: XCTestCase {
         let strategy = ProAVAudioStrategy.make(codecpar: codecpar)
         XCTAssertTrue(strategy.copiesBitstream)
         XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "ec-3", channels: "6"))
+    }
+
+    func testUnknownChannelCountProducesNoChannelsAttribute() {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_id = AV_CODEC_ID_AC3
+        codecpar.profile = AV_PROFILE_UNKNOWN
+        codecpar.ch_layout.nb_channels = 0
+        let strategy = ProAVAudioStrategy.make(codecpar: codecpar)
+        XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "ac-3", channels: nil))
     }
 
     func testUnsupportedCodecTranscodesToFLAC() {

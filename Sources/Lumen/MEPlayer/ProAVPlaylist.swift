@@ -66,15 +66,15 @@ struct ProAVVideoSignaling {
 
 struct ProAVAudioSignaling: Equatable {
     let codecsAttribute: String
-    let channels: String
+    let channels: String?
 }
 
 enum ProAVAudioStrategy {
     case copy(signaling: ProAVAudioSignaling)
-    case transcodeToFLAC(channels: String)
+    case transcodeToFLAC(channels: String?)
 
     static func make(codecpar: AVCodecParameters) -> ProAVAudioStrategy {
-        let channels = "\(codecpar.ch_layout.nb_channels)"
+        let channels: String? = codecpar.ch_layout.nb_channels > 0 ? "\(codecpar.ch_layout.nb_channels)" : nil
         switch codecpar.codec_id {
         case AV_CODEC_ID_EAC3:
             let isAtmos = codecpar.profile == AV_PROFILE_EAC3_DDP_ATMOS
@@ -139,7 +139,11 @@ enum ProAVPlaylist {
         }
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
         if let audio {
-            lines.append("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"main\",NAME=\"Original\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"\(audio.channels)\"")
+            var mediaAttributes = ["TYPE=AUDIO", "GROUP-ID=\"main\"", "NAME=\"Original\"", "DEFAULT=YES", "AUTOSELECT=YES"]
+            if let channels = audio.channels {
+                mediaAttributes.append("CHANNELS=\"\(channels)\"")
+            }
+            lines.append("#EXT-X-MEDIA:" + mediaAttributes.joined(separator: ","))
         }
         lines.append("#EXT-X-STREAM-INF:" + attributes.joined(separator: ","))
         lines.append(mediaPlaylistName)
