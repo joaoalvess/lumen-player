@@ -12,6 +12,7 @@ import Libavfilter
 import Libavformat
 
 public final class MEPlayerItem: Sendable {
+    private static let memorySeekDrainTimeout = TimeInterval(0.5)
     private let url: URL
     private let options: KSOptions
     private let operationQueue = OperationQueue()
@@ -42,7 +43,8 @@ public final class MEPlayerItem: Sendable {
     private var videoClock = KSClock()
     private var isFirst = true
     private var isSeek = false
-    private var memorySeekNeedsNetwork = false
+    private var memorySeekAwaitingTracks = 0
+    private var memorySeekFailed = false
     private var allPlayerItemTracks = [PlayerItemTrackProtocol]()
     private var maxFrameDuration = 10.0
     private var videoAudioTracks = [CapacityProtocol]()
@@ -710,14 +712,9 @@ extension MEPlayerItem {
             while state == .paused {
                 condition.wait()
             }
-            var forceNetworkSeek = false
-            if state == .seeking {
-                forceNetworkSeek = memorySeekNeedsNetwork
-                memorySeekNeedsNetwork = false
-            }
             condition.unlock()
             if state == .seeking {
-                if !forceNetworkSeek, !seekByBytes, options.isMemorySeekEnabled,
+                if !seekByBytes, options.isMemorySeekEnabled,
                    allPlayerItemTracks.allSatisfy({ !$0.isLoopModel })
                 {
                     let seekToTime = seekTime
@@ -728,7 +725,7 @@ extension MEPlayerItem {
                             break
                         }
                         condition.lock()
-                        let committed = !memorySeekNeedsNetwork && seekToTime == seekTime
+                        let committed = seekToTime == seekTime
                         if committed {
                             state = .reading
                         }
@@ -923,24 +920,46 @@ extension MEPlayerItem {
         guard canServeSeekFromMemory(target: target) else {
             return false
         }
-        (videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>)?.fastSeek(to: target) { [weak self] in
-            self?.handleMemorySeekFailure()
+        let asyncVideoTrack = videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>
+        let asyncAudioTrack = audioTrack as? AsyncPlayerItemTrack<AudioFrame>
+        condition.lock()
+        memorySeekAwaitingTracks = (asyncVideoTrack == nil ? 0 : 1) + (asyncAudioTrack == nil ? 0 : 1)
+        memorySeekFailed = false
+        condition.unlock()
+        asyncVideoTrack?.fastSeek(to: target) { [weak self] drained in
+            self?.finishMemorySeek(drained: drained)
         }
-        (audioTrack as? AsyncPlayerItemTrack<AudioFrame>)?.fastSeek(to: target) { [weak self] in
-            self?.handleMemorySeekFailure()
+        asyncAudioTrack?.fastSeek(to: target) { [weak self] drained in
+            self?.finishMemorySeek(drained: drained)
         }
-        return true
+        return waitForMemorySeek()
     }
 
-    private func handleMemorySeekFailure() {
+    private func finishMemorySeek(drained: Bool) {
         condition.lock()
         defer { condition.unlock() }
-        guard [MESourceState.reading, .paused, .seeking].contains(state) else {
+        guard memorySeekAwaitingTracks > 0 else {
             return
         }
-        memorySeekNeedsNetwork = true
-        state = .seeking
+        memorySeekAwaitingTracks -= 1
+        if !drained {
+            memorySeekFailed = true
+        }
         condition.broadcast()
+    }
+
+    private func waitForMemorySeek() -> Bool {
+        let deadline = Date(timeIntervalSinceNow: MEPlayerItem.memorySeekDrainTimeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while memorySeekAwaitingTracks > 0, !memorySeekFailed, state != .closed {
+            if !condition.wait(until: deadline) {
+                break
+            }
+        }
+        let drained = memorySeekAwaitingTracks == 0 && !memorySeekFailed
+        memorySeekAwaitingTracks = 0
+        return drained
     }
 }
 

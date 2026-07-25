@@ -217,7 +217,7 @@ func packetWindowCovers(target: TimeInterval, head: ObjectQueueItem, tail: Objec
 final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     private struct PendingMemorySeek {
         let target: TimeInterval
-        let onFailure: () -> Void
+        let completion: (Bool) -> Void
     }
 
     private var pendingMemorySeek: PendingMemorySeek?
@@ -325,15 +325,16 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
         return startPacket(atOrBefore: target) != nil
     }
 
-    func fastSeek(to time: TimeInterval, onFailure: @escaping () -> Void) {
+    func fastSeek(to time: TimeInterval, completion: @escaping (Bool) -> Void) {
         if decodeOperation?.isFinished == true {
             decode()
         }
         seekTime = time
         outputRenderQueue.flush()
         stateLock.lock()
-        pendingMemorySeek = PendingMemorySeek(target: time, onFailure: onFailure)
+        pendingMemorySeek = PendingMemorySeek(target: time, completion: completion)
         stateLock.unlock()
+        packetQueue.wakeup()
     }
 
     private func takePendingMemorySeek() -> PendingMemorySeek? {
@@ -346,8 +347,10 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
 
     private func clearPendingMemorySeek() {
         stateLock.lock()
-        defer { stateLock.unlock() }
+        let pending = pendingMemorySeek
         pendingMemorySeek = nil
+        stateLock.unlock()
+        pending?.completion(false)
     }
 
     private func startPacket(atOrBefore target: TimeInterval) -> Packet? {
@@ -364,12 +367,11 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
 
     private func performMemorySeek(_ pending: PendingMemorySeek) {
         guard let chosen = startPacket(atOrBefore: pending.target), packetQueue.drain(upTo: chosen) else {
-            if state == .decoding {
-                pending.onFailure()
-            }
+            pending.completion(false)
             return
         }
         decoderMap.values.forEach { $0.doFlushCodec() }
+        pending.completion(true)
     }
 
     override func shutdown() {

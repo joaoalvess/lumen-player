@@ -166,6 +166,12 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         return result
     }
 
+    func wakeup() {
+        condition.lock()
+        defer { condition.unlock() }
+        condition.broadcast()
+    }
+
     public func flush() {
         condition.lock()
         defer { condition.unlock() }
