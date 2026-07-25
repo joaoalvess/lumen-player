@@ -208,4 +208,45 @@ class SubtitleTest: XCTestCase {
         let plainFont = try XCTUnwrap(displayed.attribute(.font, at: plainLocation, effectiveRange: nil) as? UIFont)
         XCTAssertEqual(plainFont.pointSize, SubtitleModel.textFontSize, accuracy: 0.01)
     }
+
+    func testTickKeepsTheAssHeaderAndInlineFonts() throws {
+        let string = """
+        [Script Info]
+        PlayResX: 384
+        PlayResY: 288
+
+        [V4+ Styles]
+        Format: Name, Fontname, Fontsize
+        Style: Default,Helvetica,32
+
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Plain
+        Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\fnCourier\\fs30}Inline
+
+        """
+        let scanner = Scanner(string: string)
+        let parse = AssParse()
+        XCTAssertEqual(parse.canParse(scanner: scanner), true)
+        let parts = parse.parse(scanner: scanner)
+        XCTAssertEqual(parts.count, 2)
+        let parsedHeader = try XCTUnwrap(parts[0].text)
+        let parsedHeaderFont = try XCTUnwrap(parsedHeader.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        let parsedInline = try XCTUnwrap(parts[1].text)
+        let parsedInlineFont = try XCTUnwrap(parsedInline.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        let info = StubSubtitleInfo()
+        info.parts = parts
+        let model = SubtitleModel()
+        model.selectedSubtitleInfo = info
+        XCTAssertEqual(model.subtitle(currentTime: 1.5), true)
+        XCTAssertEqual(model.parts.count, 2)
+        let displayedHeader = try XCTUnwrap(model.parts[0].text)
+        let headerFont = try XCTUnwrap(displayedHeader.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(headerFont.fontName, parsedHeaderFont.fontName)
+        XCTAssertEqual(headerFont.pointSize, 32 * SubtitleModel.textFontSize / 16, accuracy: 0.01)
+        let displayedInline = try XCTUnwrap(model.parts[1].text)
+        let inlineFont = try XCTUnwrap(displayedInline.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
+        XCTAssertEqual(inlineFont.fontName, parsedInlineFont.fontName)
+        XCTAssertEqual(inlineFont.pointSize, 30 * SubtitleModel.textFontSize / 16, accuracy: 0.01)
+    }
 }
