@@ -20,11 +20,11 @@ enum DOVIPacketRewriter {
     static let enhancementLayerNALUnitType: UInt8 = 63
     private static let profile81ConversionMode: UInt8 = 2
 
-    static func nalUnitLengthSize(extradata: UnsafePointer<UInt8>?, size: Int32) -> Int? {
-        guard let extradata, size >= 23, extradata[0] == 1 else {
+    static func hevcNALUnitLengthSize(hvcC: UnsafePointer<UInt8>?, size: Int32) -> Int? {
+        guard let hvcC, size >= 23, hvcC[0] == 1 else {
             return nil
         }
-        return Int(extradata[21] & 0x03) + 1
+        return Int(hvcC[21] & 0x03) + 1
     }
 
     static func rewrite(payload: Data, nalLengthSize: Int, transformRPUNALUnit: (Data) -> Data?) throws -> Data {

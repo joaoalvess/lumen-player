@@ -120,17 +120,17 @@ class DOVIPacketRewriterTest: XCTestCase {
         }
     }
 
-    func testNALUnitLengthSizeReadsHVCC() {
+    func testHEVCNALUnitLengthSizeReadsHVCC() {
         var hvcc = [UInt8](repeating: 0, count: 23)
         hvcc[0] = 1
         hvcc[21] = 0xFF
-        XCTAssertEqual(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.nalUnitLengthSize(extradata: $0.baseAddress, size: Int32(hvcc.count)) }, 4)
+        XCTAssertEqual(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: $0.baseAddress, size: Int32(hvcc.count)) }, 4)
         hvcc[21] = 0xFE
-        XCTAssertEqual(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.nalUnitLengthSize(extradata: $0.baseAddress, size: Int32(hvcc.count)) }, 3)
-        XCTAssertNil(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.nalUnitLengthSize(extradata: $0.baseAddress, size: 22) })
+        XCTAssertEqual(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: $0.baseAddress, size: Int32(hvcc.count)) }, 3)
+        XCTAssertNil(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: $0.baseAddress, size: 22) })
         hvcc[0] = 0
-        XCTAssertNil(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.nalUnitLengthSize(extradata: $0.baseAddress, size: Int32(hvcc.count)) })
-        XCTAssertNil(DOVIPacketRewriter.nalUnitLengthSize(extradata: nil, size: 23))
+        XCTAssertNil(hvcc.withUnsafeBufferPointer { DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: $0.baseAddress, size: Int32(hvcc.count)) })
+        XCTAssertNil(DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: nil, size: 23))
     }
 
     func testProfile81ConfigurationRecordBytesFromSourceBytes() {
