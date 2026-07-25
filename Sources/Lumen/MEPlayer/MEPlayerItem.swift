@@ -704,6 +704,8 @@ extension MEPlayerItem {
         }
         if remuxSession == nil {
             allPlayerItemTracks.forEach { $0.decode() }
+        } else {
+            allPlayerItemTracks.filter { $0.mediaType == .subtitle }.forEach { $0.decode() }
         }
         while [MESourceState.paused, .seeking, .reading].contains(state) {
             condition.lock()
@@ -824,10 +826,17 @@ extension MEPlayerItem {
             } else {
                 muxPacket(packet: corePacket)
             }
-            if corePacket.pointee.size <= 0 || remuxSession != nil {
+            if corePacket.pointee.size <= 0 {
                 return 0
             }
             let first = assetTracks.first { $0.trackID == corePacket.pointee.stream_index }
+            if remuxSession != nil {
+                if let first, first.mediaType == .subtitle, first.isEnabled {
+                    packet.assetTrack = first
+                    first.subtitle?.putPacket(packet: packet)
+                }
+                return 0
+            }
             if let first, first.isEnabled {
                 packet.assetTrack = first
                 if first.mediaType == .video {
