@@ -18,6 +18,7 @@ enum DOVIPacketRewriteError: Error, Equatable {
 enum DOVIPacketRewriter {
     static let rpuNALUnitType: UInt8 = 62
     static let enhancementLayerNALUnitType: UInt8 = 63
+    static let configurationRecordByteCount = 9
     private static let profile81ConversionMode: UInt8 = 2
 
     static func hevcNALUnitLengthSize(hvcC: UnsafePointer<UInt8>?, size: Int32) -> Int? {

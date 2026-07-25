@@ -413,20 +413,17 @@ extension MEPlayerItem {
     }
 
     private func overrideDolbyVisionConfigurationRecord(codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
-        let existing = av_packet_side_data_get(codecpar.pointee.coded_side_data, codecpar.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF)
-        if let existing, existing.pointee.size >= 9, let data = existing.pointee.data {
-            let record = DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: Array(UnsafeBufferPointer(start: data, count: 9)))
-            for index in 0 ..< record.count {
-                data[index] = record[index]
-            }
-            return true
-        }
+        let recordSize = MemoryLayout<AVDOVIDecoderConfigurationRecord>.size
         var source = [UInt8]()
-        if let existing, let data = existing.pointee.data {
-            source = Array(UnsafeBufferPointer(start: data, count: min(existing.pointee.size, 9)))
+        if let existing = av_packet_side_data_get(codecpar.pointee.coded_side_data, codecpar.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF), let data = existing.pointee.data {
+            source = Array(UnsafeBufferPointer(start: data, count: min(existing.pointee.size, DOVIPacketRewriter.configurationRecordByteCount)))
         }
-        let record = DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: source)
-        guard let sideData = av_packet_side_data_new(&codecpar.pointee.coded_side_data, &codecpar.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF, record.count, 0),
+        var record = DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: source)
+        guard recordSize >= record.count else {
+            return false
+        }
+        record.append(contentsOf: [UInt8](repeating: 0, count: recordSize - record.count))
+        guard let sideData = av_packet_side_data_new(&codecpar.pointee.coded_side_data, &codecpar.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF, recordSize, 0),
               let data = sideData.pointee.data
         else {
             return false

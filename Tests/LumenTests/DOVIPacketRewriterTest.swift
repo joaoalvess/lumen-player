@@ -207,5 +207,7 @@ class DOVIPacketRewriterTest: XCTestCase {
                        [1, 0, 8, 9, 1, 0, 1, 1, 0])
         XCTAssertEqual(DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: [UInt8]()),
                        [1, 0, 8, 0, 1, 0, 1, 1, 0])
+        XCTAssertEqual(DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: profile7Source).count,
+                       DOVIPacketRewriter.configurationRecordByteCount)
     }
 }
