@@ -10,6 +10,14 @@ struct ProAVVideoSignaling {
     let supplementalCodecs: String?
     let preferredDynamicRange: DynamicRange
 
+    init(codecTag: String, codecsAttribute: String, videoRange: String, supplementalCodecs: String?, preferredDynamicRange: DynamicRange) {
+        self.codecTag = codecTag
+        self.codecsAttribute = codecsAttribute
+        self.videoRange = videoRange
+        self.supplementalCodecs = supplementalCodecs
+        self.preferredDynamicRange = preferredDynamicRange
+    }
+
     init?(track: FFmpegAssetTrack) {
         guard track.codecpar.codec_id == AV_CODEC_ID_HEVC else { return nil }
         let level = track.codecpar.level > 0 ? Int(track.codecpar.level) : 153
@@ -56,40 +64,46 @@ struct ProAVVideoSignaling {
     }
 }
 
-enum ProAVAudioStrategy {
-    case copy(codecsAttribute: String)
-    case copyAwaitingFFmpeg8AtmosDEC3(codecsAttribute: String)
-    case transcodeToFLAC
+struct ProAVAudioSignaling: Equatable {
+    let codecsAttribute: String
+    let channels: String
+}
 
-    static func make(codecId: AVCodecID) -> ProAVAudioStrategy {
-        switch codecId {
+enum ProAVAudioStrategy {
+    case copy(signaling: ProAVAudioSignaling)
+    case transcodeToFLAC(channels: String)
+
+    static func make(codecpar: AVCodecParameters) -> ProAVAudioStrategy {
+        let channels = "\(codecpar.ch_layout.nb_channels)"
+        switch codecpar.codec_id {
         case AV_CODEC_ID_EAC3:
-            return .copyAwaitingFFmpeg8AtmosDEC3(codecsAttribute: "ec-3")
+            let isAtmos = codecpar.profile == AV_PROFILE_EAC3_DDP_ATMOS
+            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "ec-3", channels: isAtmos ? "16/JOC" : channels))
         case AV_CODEC_ID_AC3:
-            return .copy(codecsAttribute: "ac-3")
+            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "ac-3", channels: channels))
         case AV_CODEC_ID_AAC:
-            return .copy(codecsAttribute: "mp4a.40.2")
+            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "mp4a.40.2", channels: channels))
         case AV_CODEC_ID_FLAC:
-            return .copy(codecsAttribute: "fLaC")
+            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "fLaC", channels: channels))
         case AV_CODEC_ID_ALAC:
-            return .copy(codecsAttribute: "alac")
+            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "alac", channels: channels))
         default:
-            return .transcodeToFLAC
+            return .transcodeToFLAC(channels: channels)
         }
     }
 
-    var codecsAttribute: String {
+    var signaling: ProAVAudioSignaling {
         switch self {
-        case let .copy(codecsAttribute), let .copyAwaitingFFmpeg8AtmosDEC3(codecsAttribute):
-            return codecsAttribute
-        case .transcodeToFLAC:
-            return "fLaC"
+        case let .copy(signaling):
+            return signaling
+        case let .transcodeToFLAC(channels):
+            return ProAVAudioSignaling(codecsAttribute: "fLaC", channels: channels)
         }
     }
 
     var copiesBitstream: Bool {
         switch self {
-        case .copy, .copyAwaitingFFmpeg8AtmosDEC3:
+        case .copy:
             return true
         case .transcodeToFLAC:
             return false
@@ -103,10 +117,10 @@ struct ProAVSegment {
 }
 
 enum ProAVPlaylist {
-    static func master(mediaPlaylistName: String, video: ProAVVideoSignaling, audioCodecsAttribute: String?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> String {
+    static func master(mediaPlaylistName: String, video: ProAVVideoSignaling, audio: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> String {
         var codecs = video.codecsAttribute
-        if let audioCodecsAttribute {
-            codecs += ",\(audioCodecsAttribute)"
+        if let audio {
+            codecs += ",\(audio.codecsAttribute)"
         }
         var attributes = ["BANDWIDTH=\(max(bandwidth, 1_000_000))"]
         attributes.append("CODECS=\"\(codecs)\"")
@@ -120,7 +134,13 @@ enum ProAVPlaylist {
         if let supplementalCodecs = video.supplementalCodecs {
             attributes.append("SUPPLEMENTAL-CODECS=\"\(supplementalCodecs)\"")
         }
+        if audio != nil {
+            attributes.append("AUDIO=\"main\"")
+        }
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
+        if let audio {
+            lines.append("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"main\",NAME=\"Original\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"\(audio.channels)\"")
+        }
         lines.append("#EXT-X-STREAM-INF:" + attributes.joined(separator: ","))
         lines.append(mediaPlaylistName)
         return lines.joined(separator: "\n") + "\n"

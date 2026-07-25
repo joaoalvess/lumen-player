@@ -328,19 +328,19 @@ extension MEPlayerItem {
         outputVideoStream.pointee.codecpar.pointee.codec_tag = signaling.codecTagValue.bigEndian
         outputVideoStream.pointee.time_base = inputVideoStream.pointee.time_base
         streamMapping[Int(videoAssetTrack.trackID)] = 0
-        var audioCodecsAttribute: String?
+        var audioSignaling: ProAVAudioSignaling?
         let audios = assetTracks.filter { $0.mediaType == .audio }
         let preferredAudioTrackID = session.preferredAudioTrackID
         let audioAssetTrack = audios.first { preferredAudioTrackID == nil ? $0.isEnabled : $0.trackID == preferredAudioTrackID } ?? audios.first { $0.isEnabled } ?? audios.first
         if let audioAssetTrack, let inputAudioStream = formatCtx.pointee.streams[Int(audioAssetTrack.trackID)] {
-            let strategy = ProAVAudioStrategy.make(codecId: audioAssetTrack.codecpar.codec_id)
+            let strategy = ProAVAudioStrategy.make(codecpar: audioAssetTrack.codecpar)
             if strategy.copiesBitstream {
                 if let outputAudioStream = avformat_new_stream(outputFormatCtx, nil) {
                     avcodec_parameters_copy(outputAudioStream.pointee.codecpar, inputAudioStream.pointee.codecpar)
                     outputAudioStream.pointee.codecpar.pointee.codec_tag = 0
                     outputAudioStream.pointee.time_base = inputAudioStream.pointee.time_base
                     streamMapping[Int(audioAssetTrack.trackID)] = 1
-                    audioCodecsAttribute = strategy.codecsAttribute
+                    audioSignaling = strategy.signaling
                 }
             } else if let transcoder = ProAVAudioTranscoder(codecpar: inputAudioStream.pointee.codecpar, sourceTimebase: Timebase(inputAudioStream.pointee.time_base)),
                       let outputAudioStream = avformat_new_stream(outputFormatCtx, nil),
@@ -351,7 +351,7 @@ extension MEPlayerItem {
                 remuxTranscoder = transcoder
                 remuxTranscodeStreamIndex = Int(audioAssetTrack.trackID)
                 streamMapping[Int(audioAssetTrack.trackID)] = 1
-                audioCodecsAttribute = strategy.codecsAttribute
+                audioSignaling = strategy.signaling
             } else {
                 KSLog("ProAV audio track skipped: flac transcode unavailable")
             }
@@ -359,7 +359,7 @@ extension MEPlayerItem {
         let codecpar = videoAssetTrack.codecpar
         let resolution = CGSize(width: Int(codecpar.width), height: Int(codecpar.height))
         let bandwidth = videoAssetTrack.bitRate > 0 ? videoAssetTrack.bitRate : formatCtx.pointee.bit_rate
-        guard session.begin(signaling: signaling, audioCodecsAttribute: audioCodecsAttribute, bandwidth: bandwidth, resolution: resolution, frameRate: videoAssetTrack.nominalFrameRate),
+        guard session.begin(signaling: signaling, audioSignaling: audioSignaling, bandwidth: bandwidth, resolution: resolution, frameRate: videoAssetTrack.nominalFrameRate),
               let ioContext = session.makeIOContext()
         else {
             error = NSError(errorCode: .formatOutputCreate)

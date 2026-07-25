@@ -25,7 +25,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     private var _onReady: ((URL) -> Void)?
     private var _onFailure: ((NSError) -> Void)?
     private var _videoSignaling: ProAVVideoSignaling?
-    private var audioCodecsAttribute: String?
+    private var audioSignaling: ProAVAudioSignaling?
     private var bandwidth = Int64(0)
     private var resolution = CGSize.zero
     private var frameRate = Float(0)
@@ -86,10 +86,10 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         withLock { _videoSignaling }
     }
 
-    func begin(signaling: ProAVVideoSignaling, audioCodecsAttribute: String?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {
+    func begin(signaling: ProAVVideoSignaling, audioSignaling: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {
         withLock {
             _videoSignaling = signaling
-            self.audioCodecsAttribute = audioCodecsAttribute
+            self.audioSignaling = audioSignaling
             self.bandwidth = bandwidth
             self.resolution = resolution
             self.frameRate = frameRate
@@ -324,7 +324,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         initHandle.proAVClose()
         currentHandle = nil
         initBoundaryFound = true
-        let master = ProAVPlaylist.master(mediaPlaylistName: Self.mediaPlaylistName, video: signaling, audioCodecsAttribute: audioCodecsAttribute, bandwidth: bandwidth, resolution: resolution, frameRate: frameRate)
+        let master = ProAVPlaylist.master(mediaPlaylistName: Self.mediaPlaylistName, video: signaling, audio: audioSignaling, bandwidth: bandwidth, resolution: resolution, frameRate: frameRate)
         writeLocked(text: master, to: masterURL)
         guard !failed else { return false }
         guard let segmentHandle = openFileLocked(named: segmentFileName(index: segmentIndex)) else { return false }
