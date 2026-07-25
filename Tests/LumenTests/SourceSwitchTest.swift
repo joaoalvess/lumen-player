@@ -85,6 +85,7 @@ final class ColdOnlyFakeEngine: SourceSwitchFakeEngineBase, MediaPlayerProtocol 
 
 final class SwitchableFakeEngine: SourceSwitchFakeEngineBase, MediaPlayerProtocol {
     private(set) var switchRequests = [URL]()
+    private(set) var cancelCount = 0
     private var pendingSwitchCompletion: ((Bool) -> Void)?
 
     func switchSource(url: URL, options _: KSOptions, completion: @escaping ((Bool) -> Void)) {
@@ -93,6 +94,13 @@ final class SwitchableFakeEngine: SourceSwitchFakeEngineBase, MediaPlayerProtoco
         previous?(false)
         switchRequests.append(url)
         pendingSwitchCompletion = completion
+    }
+
+    func cancelSourceSwitch() {
+        guard let completion = pendingSwitchCompletion else { return }
+        pendingSwitchCompletion = nil
+        cancelCount += 1
+        completion(false)
     }
 
     func completePendingSwitch(success: Bool) {
@@ -154,6 +162,10 @@ class SourceSwitchTest: XCTestCase {
             XCTFail("expected the fake engine")
             return
         }
+        engine.isReadyToPlay = true
+        layer.readyToPlay(player: engine)
+        engine.loadState = .playable
+        layer.play()
         var results = [Bool]()
         layer.switchSource(url: urlB, options: options) { success in
             results.append(success)
@@ -161,9 +173,11 @@ class SourceSwitchTest: XCTestCase {
         drainMainQueue()
         XCTAssertEqual(engine.replacedURLs, [urlB])
         XCTAssertEqual(engine.prepareToPlayCount, 1)
-        XCTAssertEqual(results, [true])
+        XCTAssertEqual(engine.shutdownCount, 1)
+        XCTAssertEqual(results, [false])
         XCTAssertEqual(layer.url, urlB)
         XCTAssertNil(layer.pendingSourceSwitchURL)
+        XCTAssertEqual(layer.state, .preparing)
     }
 
     @MainActor
@@ -261,5 +275,66 @@ class SourceSwitchTest: XCTestCase {
         XCTAssertEqual(engine.replacedURLs, [])
         XCTAssertEqual(results, [false, true])
         XCTAssertEqual(layer.state, .readyToPlay)
+    }
+
+    @MainActor
+    func testReselectingCurrentSourceCancelsPendingCandidate() throws {
+        KSOptions.firstPlayerType = SwitchableFakeEngine.self
+        let urlA = try XCTUnwrap(URL(string: "https://example.com/a.m3u8"))
+        let urlB = try XCTUnwrap(URL(string: "https://example.com/b.m3u8"))
+        let options = KSOptions()
+        let layer = KSPlayerLayer(url: urlA, isAutoPlay: false, options: options)
+        guard let engine = layer.player as? SwitchableFakeEngine else {
+            XCTFail("expected the fake engine")
+            return
+        }
+        engine.isReadyToPlay = true
+        layer.readyToPlay(player: engine)
+        var candidateResults = [Bool]()
+        layer.switchSource(url: urlB, options: options) { success in
+            candidateResults.append(success)
+        }
+        var reselectResults = [Bool]()
+        layer.switchSource(url: urlA, options: options) { success in
+            reselectResults.append(success)
+        }
+        drainMainQueue()
+        XCTAssertEqual(engine.switchRequests, [urlB])
+        XCTAssertEqual(engine.cancelCount, 1)
+        XCTAssertEqual(reselectResults, [true])
+        XCTAssertEqual(candidateResults, [false])
+        XCTAssertEqual(layer.url, urlA)
+        XCTAssertNil(layer.pendingSourceSwitchURL)
+        XCTAssertEqual(engine.replacedURLs, [])
+        XCTAssertEqual(engine.shutdownCount, 0)
+        XCTAssertEqual(layer.state, .readyToPlay)
+    }
+
+    @MainActor
+    func testCoalescedSwitchRequestsShareTheCandidateResult() throws {
+        KSOptions.firstPlayerType = SwitchableFakeEngine.self
+        let urlA = try XCTUnwrap(URL(string: "https://example.com/a.m3u8"))
+        let urlB = try XCTUnwrap(URL(string: "https://example.com/b.m3u8"))
+        let options = KSOptions()
+        let layer = KSPlayerLayer(url: urlA, isAutoPlay: false, options: options)
+        guard let engine = layer.player as? SwitchableFakeEngine else {
+            XCTFail("expected the fake engine")
+            return
+        }
+        engine.isReadyToPlay = true
+        layer.readyToPlay(player: engine)
+        var results = [Bool]()
+        layer.switchSource(url: urlB, options: options) { success in
+            results.append(success)
+        }
+        layer.switchSource(url: urlB, options: options) { success in
+            results.append(success)
+        }
+        XCTAssertEqual(engine.switchRequests, [urlB])
+        engine.completePendingSwitch(success: true)
+        drainMainQueue()
+        XCTAssertEqual(results, [true, true])
+        XCTAssertEqual(layer.url, urlB)
+        XCTAssertNil(layer.pendingSourceSwitchURL)
     }
 }
