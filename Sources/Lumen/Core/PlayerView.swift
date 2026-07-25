@@ -38,7 +38,7 @@ public protocol PlayerControllerDelegate: AnyObject {
     func playerController(seek: TimeInterval)
 }
 
-open class PlayerView: UIView, KSPlayerLayerDelegate, KSSliderDelegate {
+open class PlayerView: UIView, KSPlayerLayerDelegate, @preconcurrency KSSliderDelegate {
     public typealias ControllerDelegate = PlayerControllerDelegate
     public var playerLayer: KSPlayerLayer? {
         didSet {

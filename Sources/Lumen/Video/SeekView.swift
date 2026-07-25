@@ -63,7 +63,7 @@ class SeekView: UIView {
     #endif
 }
 
-extension SeekView: SeekViewProtocol {
+extension SeekView: @preconcurrency SeekViewProtocol {
     public func set(text: String, isAdd: Bool) {
         seekToLabel.text = text
         if !isAdd {

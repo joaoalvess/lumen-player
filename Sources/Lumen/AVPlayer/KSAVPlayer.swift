@@ -389,7 +389,7 @@ extension KSAVPlayer {
     }
 }
 
-extension KSAVPlayer: MediaPlayerProtocol {
+extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
     public var subtitleDataSouce: SubtitleDataSouce? { embedSubtitleDataSouce }
     public var isPlaying: Bool { player.rate > 0 ? true : playbackState == .playing }
     public var view: UIView? { playerView }
@@ -633,7 +633,7 @@ extension AVFoundation.AVMediaType {
     }
 }
 
-class AVMediaPlayerTrack: MediaPlayerTrack {
+class AVMediaPlayerTrack: @preconcurrency MediaPlayerTrack {
     let formatDescription: CMFormatDescription?
     let description: String
     private let track: AVPlayerItemTrack

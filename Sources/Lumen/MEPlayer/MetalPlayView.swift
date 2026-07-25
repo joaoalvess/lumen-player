@@ -25,7 +25,7 @@ public protocol VideoOutput: FrameOutput {
     func readNextFrame()
 }
 
-public final class MetalPlayView: UIView, VideoOutput {
+public final class MetalPlayView: UIView, @preconcurrency VideoOutput {
     public var displayLayer: AVSampleBufferDisplayLayer {
         displayView.displayLayer
     }

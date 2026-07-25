@@ -190,7 +190,7 @@ class UIActivityIndicatorView: UIView {
     }
 }
 
-extension UIActivityIndicatorView: LoadingIndector {
+extension UIActivityIndicatorView: @preconcurrency LoadingIndector {
     func startAnimating() {
         loadingView.backingLayer?.position = CGPoint(x: loadingView.layer!.frame.midX, y: loadingView.layer!.frame.midY)
         loadingView.backingLayer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)

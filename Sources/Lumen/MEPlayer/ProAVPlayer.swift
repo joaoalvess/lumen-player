@@ -253,7 +253,7 @@ public final class ProAVPlayer {
     }
 }
 
-extension ProAVPlayer: MediaPlayerProtocol {
+extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     public var view: UIView? { innerPlayer.view }
     public var playableTime: TimeInterval { startOffset + innerPlayer.playableTime }
     public var isReadyToPlay: Bool { innerPlayer.isReadyToPlay }

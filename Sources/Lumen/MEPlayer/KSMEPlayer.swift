@@ -292,7 +292,7 @@ extension KSMEPlayer: MEPlayerDelegate {
     }
 }
 
-extension KSMEPlayer: MediaPlayerProtocol {
+extension KSMEPlayer: @preconcurrency MediaPlayerProtocol {
     public var chapters: [Chapter] {
         playerItem.chapters
     }
