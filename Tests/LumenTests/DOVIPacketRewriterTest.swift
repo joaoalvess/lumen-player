@@ -1,3 +1,4 @@
+import Libavcodec
 @testable import Lumen
 import XCTest
 
@@ -23,6 +24,70 @@ class DOVIPacketRewriterTest: XCTestCase {
             data.append(contentsOf: unit)
         }
         return data
+    }
+
+    private func makePacket(payload: Data) throws -> UnsafeMutablePointer<AVPacket>? {
+        let packet = try XCTUnwrap(av_packet_alloc())
+        XCTAssertEqual(av_new_packet(packet, Int32(payload.count)), 0)
+        let destination = try XCTUnwrap(packet.pointee.data)
+        for (index, byte) in payload.enumerated() {
+            destination[index] = byte
+        }
+        packet.pointee.pts = 1024
+        packet.pointee.dts = 512
+        packet.pointee.duration = 2002
+        packet.pointee.flags = AV_PKT_FLAG_KEY
+        packet.pointee.stream_index = 3
+        packet.pointee.time_base = AVRational(num: 1, den: 90000)
+        return packet
+    }
+
+    private func payloadBytes(of packet: UnsafeMutablePointer<AVPacket>) throws -> Data {
+        let data = try XCTUnwrap(packet.pointee.data)
+        return Data(bytes: data, count: Int(packet.pointee.size))
+    }
+
+    func testRewritePacketReplacesPayloadAndKeepsProperties() throws {
+        let vcl = nalUnit(type: 1, body: [0xAA, 0xBB, 0xCC])
+        let enhancementLayer = nalUnit(type: 63, body: [0x01, 0x02, 0x03])
+        var allocated = try makePacket(payload: payload(of: [vcl, enhancementLayer], lengthSize: 4))
+        defer { av_packet_free(&allocated) }
+        let packet = try XCTUnwrap(allocated)
+        try DOVIPacketRewriter.rewrite(packet: packet, nalLengthSize: 4)
+        let expected = payload(of: [vcl], lengthSize: 4)
+        XCTAssertEqual(Int(packet.pointee.size), expected.count)
+        XCTAssertEqual(try payloadBytes(of: packet), expected)
+        XCTAssertNotNil(packet.pointee.buf)
+        XCTAssertEqual(packet.pointee.pts, 1024)
+        XCTAssertEqual(packet.pointee.dts, 512)
+        XCTAssertEqual(packet.pointee.duration, 2002)
+        XCTAssertEqual(packet.pointee.flags, AV_PKT_FLAG_KEY)
+        XCTAssertEqual(packet.pointee.stream_index, 3)
+        XCTAssertEqual(packet.pointee.time_base.num, 1)
+        XCTAssertEqual(packet.pointee.time_base.den, 90000)
+    }
+
+    func testRewritePacketLeavesTheOriginalIntactWhenTheWalkerFails() throws {
+        var input = Data(lengthPrefix(for: 12, lengthSize: 4))
+        input.append(contentsOf: [0x02, 0x01, 0xAA])
+        var allocated = try makePacket(payload: input)
+        defer { av_packet_free(&allocated) }
+        let packet = try XCTUnwrap(allocated)
+        XCTAssertThrowsError(try DOVIPacketRewriter.rewrite(packet: packet, nalLengthSize: 4)) { error in
+            XCTAssertEqual(error as? DOVIPacketRewriteError, .truncatedNALUnit)
+        }
+        XCTAssertEqual(Int(packet.pointee.size), input.count)
+        XCTAssertEqual(try payloadBytes(of: packet), input)
+        XCTAssertEqual(packet.pointee.pts, 1024)
+    }
+
+    func testRewritePacketWithoutPayloadFails() throws {
+        var allocated: UnsafeMutablePointer<AVPacket>? = av_packet_alloc()
+        defer { av_packet_free(&allocated) }
+        let packet = try XCTUnwrap(allocated)
+        XCTAssertThrowsError(try DOVIPacketRewriter.rewrite(packet: packet, nalLengthSize: 4)) { error in
+            XCTAssertEqual(error as? DOVIPacketRewriteError, .missingPayload)
+        }
     }
 
     func testRewriteConvertsRPUDropsEnhancementLayerAndCopiesOthers() throws {
