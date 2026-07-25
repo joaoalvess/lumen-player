@@ -9,6 +9,11 @@ import UIKit
 import AppKit
 #endif
 
+enum ProAVSeekRoute: Equatable {
+    case inner(TimeInterval)
+    case restart
+}
+
 @MainActor
 public final class ProAVPlayer {
     public static var segmentDuration = TimeInterval(2)
@@ -197,6 +202,13 @@ public final class ProAVPlayer {
         remuxItem?.shutdown()
         session?.requestCleanup()
         startRemux(at: time)
+    }
+
+    static func seekRoute(target: TimeInterval, startOffset: TimeInterval, closedSegmentsDuration: TimeInterval) -> ProAVSeekRoute {
+        guard closedSegmentsDuration > 0, target >= startOffset, target <= startOffset + closedSegmentsDuration else {
+            return .restart
+        }
+        return .inner(target - startOffset)
     }
 
     private func pendingSourceSwitchDidBecomeReady() {
@@ -404,7 +416,15 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
-        restart(at: max(time, 0), completion: completion)
+        let target = max(time, 0)
+        if !didFail, innerPlayer.isReadyToPlay, let session,
+           case let .inner(innerTime) = ProAVPlayer.seekRoute(target: target, startOffset: startOffset, closedSegmentsDuration: session.closedSegmentsDuration)
+        {
+            abortPendingSourceSwitch()
+            innerPlayer.seek(time: innerTime, completion: completion)
+            return
+        }
+        restart(at: target, completion: completion)
     }
 
     public func enterBackground() {
