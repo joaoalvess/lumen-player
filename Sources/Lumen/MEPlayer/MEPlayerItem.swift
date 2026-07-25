@@ -477,8 +477,10 @@ extension MEPlayerItem {
                 }
             }
         }
-        av_packet_ref(outputPacket, corePacket)
-        if let nalLengthSize = remuxDOVIConversionNALLengthSize, outputStream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO {
+        guard av_packet_ref(outputPacket, corePacket) == 0 else { return }
+        if let nalLengthSize = remuxDOVIConversionNALLengthSize, outputStream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
+           outputPacket.pointee.size > 0, outputPacket.pointee.data != nil
+        {
             do {
                 if try DOVIPacketRewriter.rewrite(packet: outputPacket, nalLengthSize: nalLengthSize) {
                     remuxDOVIConvertedRPUCount += 1
