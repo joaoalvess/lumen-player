@@ -455,9 +455,9 @@ private final class ProAVLaunchDelegateProxy: MEPlayerDelegate {
     func sourceDidOpened() {}
 
     func sourceDidFailed(error: NSError?) {
-        runOnMainThread { [weak self] in
-            guard let self, let target = self.target else { return }
-            target.launchDidFail(index: self.launch, error: error)
+        let index = launch
+        runOnMainThread { [weak target] in
+            target?.launchDidFail(index: index, error: error)
         }
     }
 

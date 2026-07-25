@@ -58,13 +58,12 @@ public extension String {
 
 @inline(__always)
 @preconcurrency
-// @MainActor
-public func runOnMainThread(block: @escaping () -> Void) {
+public func runOnMainThread(block: @MainActor @escaping () -> Void) {
     if Thread.isMainThread {
-        block()
+        MainActor.assumeIsolated(block)
     } else {
-        Task {
-            await MainActor.run(body: block)
+        Task { @MainActor in
+            block()
         }
     }
 }
