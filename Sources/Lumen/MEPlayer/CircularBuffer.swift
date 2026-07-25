@@ -114,7 +114,7 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         }
     }
 
-    public func peekEdges() -> (head: Item, tail: Item)? {
+    func peekEdges() -> (head: Item, tail: Item)? {
         condition.lock()
         defer { condition.unlock() }
         if destroyed || headIndex == tailIndex {
@@ -126,7 +126,7 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         return (head, tail)
     }
 
-    public func scan(_ body: (Item) -> Bool) {
+    func scan(_ body: (Item) -> Bool) {
         condition.lock()
         defer { condition.unlock() }
         if destroyed {
@@ -135,6 +135,7 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         var i = headIndex
         while i < tailIndex {
             guard let item = _buffer[Int(i & mask)] else {
+                assertionFailure("value is nil of index: \(i) headIndex: \(headIndex), tailIndex: \(tailIndex), bufferCount: \(_buffer.count), mask: \(mask)")
                 return
             }
             if !body(item) {
@@ -144,7 +145,7 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         }
     }
 
-    public func pop(count: Int) -> Int {
+    func pop(count: Int) -> Int {
         condition.lock()
         defer { condition.unlock() }
         if destroyed {
