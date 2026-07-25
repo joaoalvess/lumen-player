@@ -884,6 +884,10 @@ extension MEPlayerItem {
         condition.unlock()
     }
 
+    private var memorySeekPassiveTracks: [PlayerItemTrackProtocol] {
+        allPlayerItemTracks.filter { $0 !== videoTrack && $0 !== audioTrack }
+    }
+
     private func canServeSeekFromMemory(target: TimeInterval) -> Bool {
         let asyncVideoTrack = videoTrack as? AsyncPlayerItemTrack<VideoVTBFrame>
         let asyncAudioTrack = audioTrack as? AsyncPlayerItemTrack<AudioFrame>
@@ -1055,7 +1059,9 @@ extension MEPlayerItem: MediaPlayback {
             seekingCompletionHandler = completion
             condition.broadcast()
             condition.unlock()
-            if !isEligible {
+            if isEligible {
+                memorySeekPassiveTracks.forEach { $0.seek(time: time) }
+            } else {
                 allPlayerItemTracks.forEach { $0.seek(time: time) }
             }
         } else if state == .finished {
