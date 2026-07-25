@@ -175,6 +175,28 @@ class MemorySeekTests: XCTestCase {
         XCTAssertTrue(queue.peekEdges()?.head === refilled[0])
     }
 
+    func testWakeupReleasesAConsumerBlockedOnAnEmptyQueue() {
+        let queue = CircularBuffer<FakeQueueItem>()
+        let returned = expectation(description: "pop returned")
+        DispatchQueue.global().async {
+            XCTAssertNil(queue.pop(wait: true))
+            returned.fulfill()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            queue.wakeup()
+        }
+        wait(for: [returned], timeout: 5)
+        XCTAssertEqual(queue.count, 0)
+    }
+
+    func testWakeupKeepsQueuedItems() {
+        let items = (0 ..< 3).map { FakeQueueItem(timestamp: Int64($0)) }
+        let queue = makeQueue(items)
+        queue.wakeup()
+        XCTAssertEqual(queue.count, 3)
+        XCTAssertTrue(queue.peekEdges()?.head === items[0])
+    }
+
     private let videoTimebase = Timebase(num: 1, den: 1000)
     private let audioTimebase = Timebase(num: 1, den: 48000)
 
