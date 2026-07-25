@@ -44,6 +44,28 @@ class ProAVRemuxSessionTest: XCTestCase {
         session.finish(reachedEnd: false)
     }
 
+    func testPlaylistStartIsUnknownBeforeTheFirstVideoKeyframe() throws {
+        let session = try XCTUnwrap(makeSession())
+        XCTAssertNil(session.playlistStartSeconds)
+        session.finish(reachedEnd: false)
+    }
+
+    func testPlaylistStartIsTheKeyframeTheRemuxLandedOn() throws {
+        let session = try XCTUnwrap(makeSession())
+        _ = session.shouldCutSegment(at: 1792)
+        XCTAssertEqual(try XCTUnwrap(session.playlistStartSeconds), 1792, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
+    }
+
+    func testPlaylistStartDoesNotFollowTheOpenSegment() throws {
+        let session = try XCTUnwrap(makeSession())
+        _ = session.shouldCutSegment(at: 1792)
+        session.closeSegment(nextStartTime: 1794)
+        session.closeSegment(nextStartTime: 1796)
+        XCTAssertEqual(try XCTUnwrap(session.playlistStartSeconds), 1792, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
+    }
+
     func testOpenSegmentDoesNotCountTowardsTheWindow() throws {
         let session = try XCTUnwrap(makeSession())
         _ = session.shouldCutSegment(at: 0)

@@ -212,6 +212,10 @@ public final class ProAVPlayer {
         startRemux(at: time)
     }
 
+    private var timelineOrigin: TimeInterval {
+        session?.playlistStartSeconds ?? startOffset
+    }
+
     private var canSwitchSource: Bool {
         !didFail && reportedReady && session != nil && serverBaseURL != nil
     }
@@ -347,7 +351,7 @@ public final class ProAVPlayer {
 
 extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     public var view: UIView? { innerPlayer.view }
-    public var playableTime: TimeInterval { startOffset + innerPlayer.playableTime }
+    public var playableTime: TimeInterval { timelineOrigin + innerPlayer.playableTime }
     public var isReadyToPlay: Bool { innerPlayer.isReadyToPlay }
     public var playbackState: MediaPlaybackState { innerPlayer.playbackState }
     public var loadState: MediaLoadState { innerPlayer.loadState }
@@ -357,7 +361,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     public var fileSize: Double { remuxItem?.fileSize ?? innerPlayer.fileSize }
     public var naturalSize: CGSize { remuxItem?.naturalSize ?? innerPlayer.naturalSize }
     public var chapters: [Chapter] { remuxItem?.chapters ?? [] }
-    public var currentPlaybackTime: TimeInterval { startOffset + innerPlayer.currentPlaybackTime }
+    public var currentPlaybackTime: TimeInterval { timelineOrigin + innerPlayer.currentPlaybackTime }
     public var dynamicInfo: DynamicInfo? { remuxItem?.dynamicInfo }
     public var subtitleDataSouce: SubtitleDataSouce? { self }
 
@@ -449,7 +453,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
         let target = max(time, 0)
         if !didFail, innerPlayer.isReadyToPlay, let session,
-           case let .inner(innerTime) = ProAVPlayer.seekRoute(target: target, startOffset: startOffset, closedSegmentsDuration: session.closedSegmentsDuration)
+           case let .inner(innerTime) = ProAVPlayer.seekRoute(target: target, startOffset: timelineOrigin, closedSegmentsDuration: session.closedSegmentsDuration)
         {
             abortPendingSourceSwitch()
             innerPlayer.seek(time: innerTime, completion: completion)
