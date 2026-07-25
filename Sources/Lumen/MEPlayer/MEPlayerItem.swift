@@ -28,6 +28,7 @@ public final class MEPlayerItem: Sendable {
     private var remuxHeaderWritten = false
     private var remuxMoovWritten = false
     private var remuxStreamsAwaitingFirstPacket = Set<Int>()
+    private var remuxStreamsRequiringParsedHeader = Set<Int>()
     private var remuxFirstCutDeferredAt: Double?
     private var openOperation: BlockOperation?
     private var readOperation: BlockOperation?
@@ -318,6 +319,7 @@ extension MEPlayerItem {
         outputFormatCtx.pointee.strict_std_compliance = ProAVFFmpegConstant.complianceExperimental
         outputFormatCtx.pointee.flags |= AVFMT_FLAG_CUSTOM_IO
         streamMapping.removeAll()
+        remuxStreamsRequiringParsedHeader.removeAll()
         guard let inputVideoStream = formatCtx.pointee.streams[Int(videoAssetTrack.trackID)],
               let outputVideoStream = avformat_new_stream(outputFormatCtx, nil)
         else {
@@ -341,6 +343,9 @@ extension MEPlayerItem {
                     outputAudioStream.pointee.time_base = inputAudioStream.pointee.time_base
                     streamMapping[Int(audioAssetTrack.trackID)] = 1
                     audioSignaling = strategy.signaling
+                    if Self.requiresParsedHeader(codecID: inputAudioStream.pointee.codecpar.pointee.codec_id) {
+                        remuxStreamsRequiringParsedHeader.insert(1)
+                    }
                 }
             } else if let transcoder = ProAVAudioTranscoder(codecpar: inputAudioStream.pointee.codecpar, sourceTimebase: Timebase(inputAudioStream.pointee.time_base)),
                       let outputAudioStream = avformat_new_stream(outputFormatCtx, nil),
@@ -408,13 +413,20 @@ extension MEPlayerItem {
                 let seconds = Timebase(inputStream.pointee.time_base).cmtime(for: timestamp).seconds
                 session.trackVideoTime(seconds: seconds)
                 if corePacket.pointee.flags & AV_PKT_FLAG_KEY != 0, session.shouldCutSegment(at: seconds), canWriteRemuxFragment(at: seconds, session: session) {
+                    var flushResult = Int32(0)
                     if !remuxMoovWritten {
-                        _ = av_write_frame(outputFormatCtx, nil)
                         remuxMoovWritten = true
+                        flushResult = av_write_frame(outputFormatCtx, nil)
                     }
-                    _ = av_write_frame(outputFormatCtx, nil)
+                    if flushResult >= 0 {
+                        flushResult = av_write_frame(outputFormatCtx, nil)
+                    }
                     if let pb = outputFormatCtx.pointee.pb {
                         avio_flush(pb)
+                    }
+                    guard flushResult >= 0 else {
+                        session.fail(NSError(description: "ProAV remux fragment flush failed"))
+                        return
                     }
                     session.closeSegment(nextStartTime: seconds)
                 }
@@ -427,10 +439,21 @@ extension MEPlayerItem {
         let ret = av_write_frame(outputFormatCtx, outputPacket)
         if ret < 0 {
             KSLog("ProAV remux can not av_write_frame")
-        } else {
+        } else if !remuxStreamsRequiringParsedHeader.contains(outputIndex) || Self.startsWithAC3Syncword(packet: corePacket) {
             remuxStreamsAwaitingFirstPacket.remove(outputIndex)
         }
         av_packet_unref(outputPacket)
+    }
+
+    private static func requiresParsedHeader(codecID: AVCodecID) -> Bool {
+        codecID == AV_CODEC_ID_AC3 || codecID == AV_CODEC_ID_EAC3
+    }
+
+    private static func startsWithAC3Syncword(packet: UnsafeMutablePointer<AVPacket>) -> Bool {
+        guard let data = packet.pointee.data, packet.pointee.size >= 2 else {
+            return false
+        }
+        return data[0] == 0x0B && data[1] == 0x77
     }
 
     private func canWriteRemuxFragment(at seconds: Double, session: ProAVRemuxSession) -> Bool {
@@ -440,7 +463,14 @@ extension MEPlayerItem {
             remuxFirstCutDeferredAt = seconds
             return false
         }
-        return seconds - deferredAt >= session.configuration.targetSegmentDuration
+        guard seconds - deferredAt >= session.configuration.targetSegmentDuration else {
+            return false
+        }
+        guard remuxStreamsAwaitingFirstPacket.isDisjoint(with: remuxStreamsRequiringParsedHeader) else {
+            session.fail(NSError(description: "ProAV audio track produced no parsable packet"))
+            return false
+        }
+        return true
     }
 
     private func finishRemux(reachedEnd: Bool) {
