@@ -114,6 +114,54 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         }
     }
 
+    public func peekEdges() -> (head: Item, tail: Item)? {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed || headIndex == tailIndex {
+            return nil
+        }
+        guard let head = _buffer[Int(headIndex & mask)], let tail = _buffer[Int((tailIndex &- 1) & mask)] else {
+            return nil
+        }
+        return (head, tail)
+    }
+
+    public func scan(_ body: (Item) -> Bool) {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed {
+            return
+        }
+        var i = headIndex
+        while i < tailIndex {
+            guard let item = _buffer[Int(i & mask)] else {
+                return
+            }
+            if !body(item) {
+                return
+            }
+            i += 1
+        }
+    }
+
+    public func pop(count: Int) -> Int {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed {
+            return 0
+        }
+        var popped = 0
+        while popped < count, headIndex != tailIndex {
+            _buffer[Int(headIndex & mask)] = nil
+            headIndex &+= 1
+            popped += 1
+        }
+        if popped > 0 {
+            condition.broadcast()
+        }
+        return popped
+    }
+
     public func search(where predicate: (Item) -> Bool) -> [Item] {
         condition.lock()
         defer { condition.unlock() }
