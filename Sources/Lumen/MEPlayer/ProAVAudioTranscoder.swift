@@ -22,11 +22,17 @@ final class ProAVAudioTranscoder {
     let sampleRate: Int32
     let timebase: AVRational
 
+    static let maximumSampleRate = Int32(48000)
+
+    static func targetSampleRate(forSource rate: Int32) -> Int32 {
+        rate > maximumSampleRate ? maximumSampleRate : rate
+    }
+
     init?(codecpar: UnsafeMutablePointer<AVCodecParameters>, sourceTimebase: Timebase) {
         self.sourceTimebase = sourceTimebase
         let sourceFormat = AVSampleFormat(rawValue: codecpar.pointee.format)
         targetFormat = sourceFormat == AV_SAMPLE_FMT_S16 || sourceFormat == AV_SAMPLE_FMT_S16P ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32
-        sampleRate = codecpar.pointee.sample_rate
+        sampleRate = Self.targetSampleRate(forSource: codecpar.pointee.sample_rate)
         let channelCount = Int(codecpar.pointee.ch_layout.nb_channels)
         timebase = AVRational(num: 1, den: max(sampleRate, 1))
         bytesPerSampleFrame = Int(av_get_bytes_per_sample(targetFormat)) * channelCount
@@ -93,6 +99,7 @@ final class ProAVAudioTranscoder {
                 guard buffered else { return false }
             }
         }
+        guard drainResampler() else { return false }
         return encodeBufferedSamples(drainPartial: true, write: write)
     }
 
@@ -144,6 +151,23 @@ final class ProAVAudioTranscoder {
         guard converted >= 0 else { return false }
         pendingSamples.append(chunk.prefix(Int(converted) * bytesPerSampleFrame))
         return true
+    }
+
+    private func drainResampler() -> Bool {
+        guard swrContext != nil else { return true }
+        while true {
+            let outCapacity = swr_get_out_samples(swrContext, 0)
+            guard outCapacity > 0 else { return true }
+            var chunk = Data(count: Int(outCapacity) * bytesPerSampleFrame)
+            let converted = chunk.withUnsafeMutableBytes { rawBuffer -> Int32 in
+                guard let base = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return -1 }
+                var outputPlanes: [UnsafeMutablePointer<UInt8>?] = [base]
+                return swr_convert(swrContext, &outputPlanes, outCapacity, nil, 0)
+            }
+            guard converted >= 0 else { return false }
+            guard converted > 0 else { return true }
+            pendingSamples.append(chunk.prefix(Int(converted) * bytesPerSampleFrame))
+        }
     }
 
     private func encodeBufferedSamples(drainPartial: Bool, write: (UnsafeMutablePointer<AVPacket>) -> Void) -> Bool {
