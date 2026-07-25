@@ -36,6 +36,13 @@ struct ProAVVideoSignaling {
                     supplementalCodecs = nil
                     preferredDynamicRange = .dolbyVision
                     convertsDolbyVisionProfile7 = false
+                case (8, 2):
+                    codecTag = "hvc1"
+                    codecsAttribute = hevcCodecs
+                    videoRange = "SDR"
+                    supplementalCodecs = "\(doviCodecs)/db2g"
+                    preferredDynamicRange = .dolbyVision
+                    convertsDolbyVisionProfile7 = false
                 case (8, 4):
                     codecTag = "hvc1"
                     codecsAttribute = hevcCodecs
