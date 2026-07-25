@@ -18,7 +18,7 @@ import AppKit
 import MobileCoreServices.UTType
 #endif
 
-extension TextAlignment: RawRepresentable {
+extension TextAlignment: @retroactive RawRepresentable {
     public typealias RawValue = String
     public init?(rawValue: RawValue) {
         if rawValue == "Leading" {
@@ -44,11 +44,11 @@ extension TextAlignment: RawRepresentable {
     }
 }
 
-extension TextAlignment: Identifiable {
+extension TextAlignment: @retroactive Identifiable {
     public var id: Self { self }
 }
 
-extension HorizontalAlignment: Hashable, RawRepresentable {
+extension HorizontalAlignment: @retroactive Hashable, @retroactive RawRepresentable {
     public typealias RawValue = String
     public init?(rawValue: RawValue) {
         if rawValue == "Leading" {
@@ -76,11 +76,11 @@ extension HorizontalAlignment: Hashable, RawRepresentable {
     }
 }
 
-extension HorizontalAlignment: Identifiable {
+extension HorizontalAlignment: @retroactive Identifiable {
     public var id: Self { self }
 }
 
-extension VerticalAlignment: Hashable, RawRepresentable {
+extension VerticalAlignment: @retroactive Hashable, @retroactive RawRepresentable {
     public typealias RawValue = String
     public init?(rawValue: RawValue) {
         if rawValue == "Top" {
@@ -108,11 +108,11 @@ extension VerticalAlignment: Hashable, RawRepresentable {
     }
 }
 
-extension VerticalAlignment: Identifiable {
+extension VerticalAlignment: @retroactive Identifiable {
     public var id: Self { self }
 }
 
-extension Color: RawRepresentable {
+extension Color: @retroactive RawRepresentable {
     public typealias RawValue = String
     public init?(rawValue: RawValue) {
         guard let data = Data(base64Encoded: rawValue) else {
@@ -142,7 +142,7 @@ extension Color: RawRepresentable {
     }
 }
 
-extension Array: RawRepresentable where Element: Codable {
+extension Array: @retroactive RawRepresentable where Element: Codable {
     public init?(rawValue: String) {
         guard let data = rawValue.data(using: .utf8),
               let result = try? JSONDecoder().decode([Element].self, from: data)
@@ -160,7 +160,7 @@ extension Array: RawRepresentable where Element: Codable {
     }
 }
 
-extension Date: RawRepresentable {
+extension Date: @retroactive RawRepresentable {
     public typealias RawValue = String
     public init?(rawValue: RawValue) {
         guard let data = rawValue.data(using: .utf8),
@@ -181,14 +181,14 @@ extension Date: RawRepresentable {
     }
 }
 
-extension URL: Identifiable {
+extension URL: @retroactive Identifiable {
     public var id: Self { self }
 }
 
-extension String: Identifiable {
+extension String: @retroactive Identifiable {
     public var id: Self { self }
 }
 
-extension Float: Identifiable {
+extension Float: @retroactive Identifiable {
     public var id: Self { self }
 }

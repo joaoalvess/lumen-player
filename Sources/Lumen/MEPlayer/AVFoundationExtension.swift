@@ -105,7 +105,7 @@ extension UnsafeMutablePointer<AudioChannelLayout> {
     }
 }
 
-extension AudioChannelLayout: CustomStringConvertible {
+extension AudioChannelLayout: @retroactive CustomStringConvertible {
     public var description: String {
         "AudioChannelLayoutTag: \(mChannelLayoutTag), mNumberChannelDescriptions: \(mNumberChannelDescriptions)"
     }
