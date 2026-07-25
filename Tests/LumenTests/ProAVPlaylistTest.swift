@@ -75,6 +75,38 @@ class ProAVPlaylistTest: XCTestCase {
         XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "ac-3", channels: nil))
     }
 
+    private func aacStrategy(profile: Int32) -> ProAVAudioStrategy {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_id = AV_CODEC_ID_AAC
+        codecpar.profile = profile
+        codecpar.ch_layout.nb_channels = 2
+        return ProAVAudioStrategy.make(codecpar: codecpar)
+    }
+
+    func testAACLowComplexityKeepsTheBaseCodecString() {
+        for profile in [AV_PROFILE_AAC_LOW, AV_PROFILE_AAC_MAIN, AV_PROFILE_AAC_LTP, AV_PROFILE_UNKNOWN] {
+            let strategy = aacStrategy(profile: profile)
+            XCTAssertTrue(strategy.copiesBitstream)
+            XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "mp4a.40.2", channels: "2"))
+        }
+    }
+
+    func testHighEfficiencyAACSignalsItsOwnObjectType() {
+        let heV1 = aacStrategy(profile: AV_PROFILE_AAC_HE)
+        XCTAssertTrue(heV1.copiesBitstream)
+        XCTAssertEqual(heV1.signaling, ProAVAudioSignaling(codecsAttribute: "mp4a.40.5", channels: "2"))
+        let heV2 = aacStrategy(profile: AV_PROFILE_AAC_HE_V2)
+        XCTAssertTrue(heV2.copiesBitstream)
+        XCTAssertEqual(heV2.signaling, ProAVAudioSignaling(codecsAttribute: "mp4a.40.29", channels: "2"))
+    }
+
+    func testAACCodecsAttributeMapsTheProfileTable() {
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_AAC_LOW), "mp4a.40.2")
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_AAC_HE), "mp4a.40.5")
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_AAC_HE_V2), "mp4a.40.29")
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_UNKNOWN), "mp4a.40.2")
+    }
+
     func testUnsupportedCodecTranscodesToFLAC() {
         var codecpar = AVCodecParameters()
         codecpar.codec_id = AV_CODEC_ID_TRUEHD

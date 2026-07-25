@@ -149,13 +149,24 @@ enum ProAVAudioStrategy {
         case AV_CODEC_ID_AC3:
             return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "ac-3", channels: channels))
         case AV_CODEC_ID_AAC:
-            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "mp4a.40.2", channels: channels))
+            return .copy(signaling: ProAVAudioSignaling(codecsAttribute: aacCodecsAttribute(profile: codecpar.profile), channels: channels))
         case AV_CODEC_ID_FLAC:
             return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "fLaC", channels: channels))
         case AV_CODEC_ID_ALAC:
             return .copy(signaling: ProAVAudioSignaling(codecsAttribute: "alac", channels: channels))
         default:
             return .transcodeToFLAC(channels: channels)
+        }
+    }
+
+    static func aacCodecsAttribute(profile: Int32) -> String {
+        switch profile {
+        case AV_PROFILE_AAC_HE:
+            return "mp4a.40.5"
+        case AV_PROFILE_AAC_HE_V2:
+            return "mp4a.40.29"
+        default:
+            return "mp4a.40.2"
         }
     }
 
