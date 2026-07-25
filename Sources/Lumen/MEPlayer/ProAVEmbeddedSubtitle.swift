@@ -106,7 +106,6 @@ final class ProAVSubtitlePartStore {
 final class ProAVEmbeddedSubtitleInfo: SubtitleInfo {
     let subtitleID: String
     private(set) var name: String
-    private(set) var languageCode: String?
     var delay: TimeInterval = 0
     private let store = ProAVSubtitlePartStore()
     private weak var track: FFmpegAssetTrack?
@@ -124,7 +123,6 @@ final class ProAVEmbeddedSubtitleInfo: SubtitleInfo {
     init(track: FFmpegAssetTrack) {
         subtitleID = String(track.trackID)
         name = track.name
-        languageCode = track.languageCode
         storedIsEnabled = track.isEnabled
         self.track = track
         queue = track.subtitle
@@ -132,7 +130,6 @@ final class ProAVEmbeddedSubtitleInfo: SubtitleInfo {
 
     func bind(track: FFmpegAssetTrack) {
         name = track.name
-        languageCode = track.languageCode
         self.track = track
         queue = track.subtitle
         track.isEnabled = storedIsEnabled
