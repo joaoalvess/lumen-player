@@ -366,7 +366,7 @@ extension MEPlayerItem {
             return
         }
         outputFormatCtx.pointee.pb = ioContext
-        let movDictionary: [String: Any] = ["movflags": "+empty_moov+delay_moov+default_base_moof+frag_custom+skip_sidx"]
+        let movDictionary: [String: Any] = ["movflags": "+empty_moov+delay_moov+default_base_moof+frag_custom+skip_sidx", "use_editlist": "0"]
         var avOptions = movDictionary.avOptions
         ret = avformat_write_header(outputFormatCtx, &avOptions)
         av_dict_free(&avOptions)
