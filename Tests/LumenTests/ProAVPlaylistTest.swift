@@ -151,4 +151,116 @@ class ProAVPlaylistTest: XCTestCase {
             XCTAssertFalse(signaling.convertsDolbyVisionProfile7)
         }
     }
+
+    private func withH264Track(avcC record: [UInt8], format: Int32 = AV_PIX_FMT_YUV420P.rawValue, perform: (FFmpegAssetTrack) -> Void) {
+        var bytes = record
+        bytes.withUnsafeMutableBufferPointer { buffer in
+            var codecpar = AVCodecParameters()
+            codecpar.codec_type = AVMEDIA_TYPE_VIDEO
+            codecpar.codec_id = AV_CODEC_ID_H264
+            codecpar.format = format
+            codecpar.extradata = buffer.baseAddress
+            codecpar.extradata_size = Int32(buffer.count)
+            guard let track = FFmpegAssetTrack(codecpar: codecpar) else {
+                XCTFail("could not create the h264 track")
+                return
+            }
+            perform(track)
+        }
+    }
+
+    func testH264CodecsAttributeReadsAVCC() {
+        let high40: [UInt8] = [1, 0x64, 0x00, 0x28, 0xFF, 0xE1]
+        XCTAssertEqual(high40.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: Int32(high40.count)) }, "avc1.640028")
+        let main31: [UInt8] = [1, 0x4D, 0x40, 0x1E, 0xFF, 0xE1]
+        XCTAssertEqual(main31.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: Int32(main31.count)) }, "avc1.4d401e")
+        XCTAssertNil(high40.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: 3) })
+        XCTAssertNil(ProAVVideoSignaling.h264CodecsAttribute(avcC: nil, size: 6))
+    }
+
+    func testH264CodecsAttributeRefusesAnnexBAndUnusableIndications() {
+        let annexB: [UInt8] = [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28]
+        XCTAssertNil(annexB.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: Int32(annexB.count)) })
+        let zeroLevel: [UInt8] = [1, 0x64, 0x00, 0x00, 0xFF, 0xE1]
+        XCTAssertNil(zeroLevel.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: Int32(zeroLevel.count)) })
+        let zeroProfile: [UInt8] = [1, 0x00, 0x00, 0x28, 0xFF, 0xE1]
+        XCTAssertNil(zeroProfile.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: Int32(zeroProfile.count)) })
+    }
+
+    func testH264CodecsAttributeRefusesProfilesWithoutHardwareDecode() {
+        for profileIndication in [UInt8(0x6E), UInt8(0x7A), UInt8(0xF4), UInt8(0x2C)] {
+            let record: [UInt8] = [1, profileIndication, 0x00, 0x28, 0xFF, 0xE1]
+            XCTAssertNil(record.withUnsafeBufferPointer { ProAVVideoSignaling.h264CodecsAttribute(avcC: $0.baseAddress, size: Int32(record.count)) })
+        }
+    }
+
+    func testH264TrackProducesAVC1MasterPlaylist() {
+        withH264Track(avcC: [1, 0x64, 0x00, 0x28, 0xFF, 0xE1]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false) else {
+                XCTFail("h264 signaling refused")
+                return
+            }
+            XCTAssertEqual(signaling.codecTag, "avc1")
+            XCTAssertEqual(signaling.codecsAttribute, "avc1.640028")
+            XCTAssertEqual(signaling.videoRange, "SDR")
+            XCTAssertNil(signaling.supplementalCodecs)
+            XCTAssertEqual(signaling.preferredDynamicRange, .sdr)
+            XCTAssertFalse(signaling.convertsDolbyVisionProfile7)
+            XCTAssertEqual(signaling.codecTagValue, 0x6176_6331)
+            let master = ProAVPlaylist.master(mediaPlaylistName: "media.m3u8", video: signaling, audio: ProAVAudioSignaling(codecsAttribute: "ec-3", channels: "16/JOC"), bandwidth: 12_000_000, resolution: CGSize(width: 1920, height: 1080), frameRate: 23.976)
+            XCTAssertTrue(master.contains("CODECS=\"avc1.640028,ec-3\""))
+            XCTAssertTrue(master.contains("VIDEO-RANGE=SDR"))
+            XCTAssertFalse(master.contains("SUPPLEMENTAL-CODECS"))
+        }
+    }
+
+    func testH264TrackFallsBackForAnnexBAndHi10P() {
+        withH264Track(avcC: [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28]) { track in
+            XCTAssertNil(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false))
+        }
+        withH264Track(avcC: [1, 0x6E, 0x00, 0x28, 0xFF, 0xE1]) { track in
+            XCTAssertNil(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false))
+        }
+    }
+
+    func testH264TrackFallsBackForTenBitPixelFormat() {
+        withH264Track(avcC: [1, 0x64, 0x00, 0x28, 0xFF, 0xE1], format: AV_PIX_FMT_YUV420P10LE.rawValue) { track in
+            XCTAssertNil(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false))
+        }
+    }
+
+    func testH264TrackAcceptsFullRangeAndUnsetPixelFormat() {
+        withH264Track(avcC: [1, 0x4D, 0x40, 0x1E, 0xFF, 0xE1], format: AV_PIX_FMT_YUVJ420P.rawValue) { track in
+            XCTAssertEqual(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false)?.codecsAttribute, "avc1.4d401e")
+        }
+        withH264Track(avcC: [1, 0x4D, 0x40, 0x1E, 0xFF, 0xE1], format: AV_PIX_FMT_NONE.rawValue) { track in
+            XCTAssertEqual(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false)?.codecsAttribute, "avc1.4d401e")
+        }
+    }
+
+    func testHEVCTrackWithoutDolbyVisionKeepsRangeSignaling() {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_type = AVMEDIA_TYPE_VIDEO
+        codecpar.codec_id = AV_CODEC_ID_HEVC
+        codecpar.level = 120
+        guard let sdrTrack = FFmpegAssetTrack(codecpar: codecpar),
+              let sdr = ProAVVideoSignaling(track: sdrTrack, convertDolbyVisionProfile7: false)
+        else {
+            XCTFail("sdr hevc signaling refused")
+            return
+        }
+        XCTAssertEqual(sdr.codecTag, "hvc1")
+        XCTAssertEqual(sdr.codecsAttribute, "hvc1.2.4.L120.B0")
+        XCTAssertEqual(sdr.videoRange, "SDR")
+        XCTAssertEqual(sdr.preferredDynamicRange, .sdr)
+        codecpar.color_trc = AVCOL_TRC_SMPTE2084
+        guard let hdrTrack = FFmpegAssetTrack(codecpar: codecpar),
+              let hdr = ProAVVideoSignaling(track: hdrTrack, convertDolbyVisionProfile7: false)
+        else {
+            XCTFail("hdr10 hevc signaling refused")
+            return
+        }
+        XCTAssertEqual(hdr.videoRange, "PQ")
+        XCTAssertEqual(hdr.preferredDynamicRange, .hdr10)
+    }
 }
