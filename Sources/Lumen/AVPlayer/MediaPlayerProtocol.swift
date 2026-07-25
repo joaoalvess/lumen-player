@@ -90,6 +90,7 @@ public protocol MediaPlayerProtocol: MediaPlayback {
     init(url: URL, options: KSOptions)
     func replace(url: URL, options: KSOptions)
     func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void))
+    func cancelSourceSwitch()
     func play()
     func pause()
     func enterBackground()
@@ -104,11 +105,11 @@ public extension MediaPlayerProtocol {
         tracks(mediaType: .video).first { $0.isEnabled }?.nominalFrameRate ?? 0
     }
 
-    func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
-        replace(url: url, options: options)
-        prepareToPlay()
-        completion(true)
+    func switchSource(url _: URL, options _: KSOptions, completion: @escaping ((Bool) -> Void)) {
+        completion(false)
     }
+
+    func cancelSourceSwitch() {}
 }
 
 @MainActor
