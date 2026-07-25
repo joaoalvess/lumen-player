@@ -89,6 +89,7 @@ public protocol MediaPlayerProtocol: MediaPlayback {
     var dynamicInfo: DynamicInfo? { get }
     init(url: URL, options: KSOptions)
     func replace(url: URL, options: KSOptions)
+    func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void))
     func play()
     func pause()
     func enterBackground()
@@ -101,6 +102,12 @@ public protocol MediaPlayerProtocol: MediaPlayback {
 public extension MediaPlayerProtocol {
     var nominalFrameRate: Float {
         tracks(mediaType: .video).first { $0.isEnabled }?.nominalFrameRate ?? 0
+    }
+
+    func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
+        replace(url: url, options: options)
+        prepareToPlay()
+        completion(true)
     }
 }
 
