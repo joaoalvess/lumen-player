@@ -8,6 +8,7 @@ enum DOVIPacketRewriteError: Error, Equatable {
     case truncatedNALUnit
     case invalidNALUnitLength
     case oversizedNALUnit
+    case unaddressablePayload
     case emptyRewrittenPayload
     case rpuConversionFailed
     case missingPayload
@@ -34,7 +35,7 @@ enum DOVIPacketRewriter {
         }
         return try payload.withUnsafeBytes { rawBuffer -> Data in
             guard let bytes = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                throw DOVIPacketRewriteError.emptyRewrittenPayload
+                throw DOVIPacketRewriteError.unaddressablePayload
             }
             let count = rawBuffer.count
             let maxNALUnitLength = (1 << (8 * nalLengthSize)) - 1
