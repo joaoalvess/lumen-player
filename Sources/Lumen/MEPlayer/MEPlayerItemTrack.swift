@@ -281,8 +281,10 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
         outerLoop: while !decodeOperation.isCancelled {
             switch state {
             case .idle:
+                clearPendingMemorySeek()
                 break outerLoop
             case .finished, .closed, .failed:
+                clearPendingMemorySeek()
                 decoderMap.values.forEach { $0.shutdown() }
                 decoderMap.removeAll()
                 break outerLoop
@@ -317,6 +319,9 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
     }
 
     func canServeSeekFromBuffer(target: TimeInterval) -> Bool {
+        guard state == .decoding || state == .flush else {
+            return false
+        }
         guard let edges = packetQueue.peekEdges(),
               packetWindowCovers(target: target, head: edges.head, tail: edges.tail)
         else {
@@ -379,6 +384,7 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
             return
         }
         state = .closed
+        clearPendingMemorySeek()
         outputRenderQueue.shutdown()
         packetQueue.shutdown()
     }
