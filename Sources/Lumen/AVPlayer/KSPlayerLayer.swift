@@ -193,6 +193,7 @@ open class KSPlayerLayer: NSObject {
     private var startTime: TimeInterval = 0
     private var sourceSwitchGeneration = 0
     private var isCommittingSourceSwitch = false
+    private var pendingSourceSwitchCompletions = [(Bool) -> Void]()
     public private(set) var pendingSourceSwitchURL: URL?
     public init(url: URL, isAutoPlay: Bool = KSOptions.isAutoPlay, options: KSOptions, delegate: KSPlayerLayerDelegate? = nil) {
         self.url = url
@@ -282,9 +283,15 @@ open class KSPlayerLayer: NSObject {
 
     public func switchSource(url: URL, options: KSOptions, completion: ((Bool) -> Void)? = nil) {
         if pendingSourceSwitchURL == url {
+            if let completion {
+                pendingSourceSwitchCompletions.append(completion)
+            }
             return
         }
-        if url == self.url, pendingSourceSwitchURL == nil {
+        if pendingSourceSwitchURL != nil {
+            cancelPendingSourceSwitch()
+        }
+        if url == self.url {
             completion?(true)
             return
         }
@@ -294,21 +301,18 @@ open class KSPlayerLayer: NSObject {
         player.switchSource(url: url, options: options) { [weak self] success in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if success {
-                    if self.pendingSourceSwitchURL == url {
-                        self.pendingSourceSwitchURL = nil
-                    }
-                    self.commitSourceSwitch(url: url, options: options)
-                    completion?(true)
-                } else {
-                    guard generation == self.sourceSwitchGeneration else {
-                        completion?(false)
-                        return
-                    }
-                    self.pendingSourceSwitchURL = nil
-                    self.set(url: url, options: options)
+                guard generation == self.sourceSwitchGeneration else {
                     completion?(false)
+                    return
                 }
+                self.pendingSourceSwitchURL = nil
+                if success {
+                    self.commitSourceSwitch(url: url, options: options)
+                } else {
+                    self.set(url: url, options: options)
+                }
+                completion?(success)
+                self.resolvePendingSourceSwitchCompletions(success)
             }
         }
     }
@@ -323,6 +327,16 @@ open class KSPlayerLayer: NSObject {
     private func cancelPendingSourceSwitch() {
         sourceSwitchGeneration += 1
         pendingSourceSwitchURL = nil
+        player.cancelSourceSwitch()
+        resolvePendingSourceSwitchCompletions(false)
+    }
+
+    private func resolvePendingSourceSwitchCompletions(_ success: Bool) {
+        let completions = pendingSourceSwitchCompletions
+        pendingSourceSwitchCompletions.removeAll()
+        for completion in completions {
+            completion(success)
+        }
     }
 
     open func play() {
