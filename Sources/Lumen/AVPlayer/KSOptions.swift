@@ -318,7 +318,7 @@ open class KSOptions {
                 hardwareDecode = false
                 asynchronousDecompression = false
                 let yadif = "yadif"
-                var yadifMode = KSOptions.yadifMode
+                let yadifMode = KSOptions.yadifMode
 //                if let assetTrack = assetTrack as? FFmpegAssetTrack {
 //                    if assetTrack.realFrameRate.num == 2 * assetTrack.avgFrameRate.num, assetTrack.realFrameRate.den == assetTrack.avgFrameRate.den {
 //                        if yadifMode == 1 {

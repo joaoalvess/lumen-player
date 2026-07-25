@@ -69,7 +69,7 @@ public class ThumbnailController {
         if videoAvgFrameRate.den == 0 || av_q2d(videoAvgFrameRate) == 0 {
             throw NSError(description: "Avg frame rate = 0, ignore")
         }
-        var codecContext = try videoStream.pointee.codecpar.pointee.createContext(options: nil)
+        let codecContext = try videoStream.pointee.codecpar.pointee.createContext(options: nil)
         defer {
             var codecContext: UnsafeMutablePointer<AVCodecContext>? = codecContext
             avcodec_free_context(&codecContext)

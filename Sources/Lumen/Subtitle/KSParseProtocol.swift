@@ -286,7 +286,7 @@ public extension [String: String] {
             attributes[.foregroundColor] = UIColor(assColor: assColor)
         }
         // 还不知道这个要设置到什么颜色上
-        if let assColor = self["SecondaryColour"] {
+        if self["SecondaryColour"] != nil {
 //            attributes[.backgroundColor] = UIColor(assColor: assColor)
         }
         if self["Bold"] == "1" {
