@@ -487,6 +487,7 @@ extension MEPlayerItem {
                 }
             } catch {
                 av_packet_unref(outputPacket)
+                remuxDOVIConversionNALLengthSize = nil
                 session.fail(NSError(description: "ProAV dolby vision conversion failed"))
                 return
             }
