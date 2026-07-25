@@ -112,42 +112,56 @@ O `ProAVPlayer` é o terceiro engine do fork. Ele **não decodifica nada**: usa 
 | `ProAVRemuxSession` | `ProAVRemuxSession.swift` | `@unchecked Sendable`; recebe os bytes do muxer, decide onde cada segmento começa/termina e escreve as playlists |
 | `ProAVLocalServer` / `ProAVLoopbackHTTPServer` | `ProAVHTTPServer.swift` | Protocolo + implementação `NWListener` (Network.framework) que serve o workspace por HTTP |
 | `ProAVVideoSignaling` | `ProAVPlaylist.swift` | Deriva `codecTag`, `CODECS`, `VIDEO-RANGE` e `SUPPLEMENTAL-CODECS` a partir da `FFmpegAssetTrack` de vídeo; init falível — é o **gate de compatibilidade** |
-| `ProAVAudioStrategy` | `ProAVPlaylist.swift` | Decide por trilha de áudio: stream copy ou transcode |
+| `ProAVAudioStrategy` / `ProAVAudioSignaling` | `ProAVPlaylist.swift` | Decide por trilha de áudio (stream copy ou transcode) e deriva `CODECS` + `CHANNELS` |
 | `ProAVSegment` / `ProAVPlaylist` | `ProAVPlaylist.swift` | Modelo de segmento e geração dos textos `master.m3u8`/`media.m3u8` |
+| `ProAVInitBoundaryScanner` | `ProAVInitBoundaryScanner.swift` | Box-walk ISOBMFF sobre o stream do muxer: acha a fronteira entre o init segment e o primeiro `moof` |
 | `ProAVAudioTranscoder` | `ProAVAudioTranscoder.swift` | Transcode de áudio não suportado pelo HLS para FLAC |
+| `DOVIPacketRewriter` | `DOVIPacketRewriter.swift` | Reescrita de packet HEVC para converter Dolby Vision perfil 7 em 8.1 (libdovi) |
 
 ### Fluxo
 
 1. `prepareToPlay` chama `startRemux(at:)`, que cria um subdiretório de trabalho e instancia um `MEPlayerItem` com uma `ProAVRemuxSession` associada. Nesse modo, o item **não chama `decode` nas trilhas** — ele só demuxa.
-2. `MEPlayerItem.startProAVRemux(session:)` monta o output com `avformat_alloc_output_context2(..., "mp4", ...)`, marca `AVFMT_FLAG_CUSTOM_IO` e `strict_std_compliance` experimental, e copia os parâmetros de codec do vídeo com `avcodec_parameters_copy` — **stream copy puro, sem bitstream filter e sem reencode**. O `codec_tag` do stream de saída é sobrescrito com a FourCC derivada do signaling.
-3. Fragmentação: `movflags = "+empty_moov+default_base_moof+frag_custom+skip_sidx"`. O `pb` do output aponta para um `AVIOContext` criado por `ProAVRemuxSession.makeIOContext` com buffer de 64 KiB, callback de write e **callback de seek que sempre falha** (`seekable = 0`) — o muxer escreve num pipe, e é o Swift que decide em qual arquivo os bytes caem.
-4. Segmentação manual: ao encontrar um packet de vídeo com `AV_PKT_FLAG_KEY` numa fronteira de duração alvo (padrão `ProAVPlayer.segmentDuration = 2s`), o código chama `av_write_frame(ctx, nil)` para flushar o fragmento (exigido por `frag_custom`), dá `avio_flush` e fecha o segmento.
-5. Artefatos em disco: `init.mp4` (header/`moov` vazio), `segment0.m4s`, `segment1.m4s`, …, mais `media.m3u8` e `master.m3u8`, escritos atomicamente. As playlists são **HLS v7** com `#EXT-X-MAP:URI="init.mp4"` e `#EXT-X-PLAYLIST-TYPE:EVENT`; `#EXT-X-ENDLIST` só aparece quando o remux termina.
+2. `MEPlayerItem.startProAVRemux(session:)` monta o output com `avformat_alloc_output_context2(..., "mp4", ...)`, marca `AVFMT_FLAG_CUSTOM_IO` e `strict_std_compliance` experimental, e copia os parâmetros de codec do vídeo com `avcodec_parameters_copy` — **sem reencode e sem bitstream filter do FFmpeg** (a única reescrita de bitstream é a conversão de DV perfil 7, descrita adiante). O `codec_tag` do stream de saída é sobrescrito com a FourCC derivada do signaling. O `avcodec_parameters_copy` também leva junto o side data `AV_PKT_DATA_DOVI_CONF` da entrada; é dele que o movenc monta o box `dvcC`/`dvvC` do `moov`, e é por isso que a compliance experimental importa (o muxer só escreve esse box com compliance ≤ `unofficial`).
+3. Fragmentação: `movflags = "+empty_moov+delay_moov+default_base_moof+frag_custom+skip_sidx"`, mais `use_editlist=0`. O `pb` do output aponta para um `AVIOContext` criado por `ProAVRemuxSession.makeIOContext` com buffer de 64 KiB, callback de write e **callback de seek que sempre falha** (`seekable = 0`) — o muxer escreve num pipe, e é o Swift que decide em qual arquivo os bytes caem. `+delay_moov` adia o `moov` para o primeiro flush, quando o muxer já parseou um frame de áudio e consegue preencher `dac3`/`dec3` (é o que habilita a sinalização JOC do Atmos). `use_editlist=0` neutraliza o efeito colateral do `delay_moov`: sem ele o movenc ligaria a edit list e deixaria de rebasear os timestamps para zero, e os fragmentos sairiam com o timestamp da fonte enquanto o `ProAVPlayer` já soma `startOffset` por cima.
+4. Segmentação manual: ao encontrar um packet de vídeo com `AV_PKT_FLAG_KEY` numa fronteira de duração alvo (padrão `ProAVPlayer.segmentDuration = 2s`), o código chama `av_write_frame(ctx, nil)` para flushar o fragmento (exigido por `frag_custom`), dá `avio_flush` e fecha o segmento. O **primeiro** corte passa por `canWriteRemuxFragment`: enquanto uma trilha AC-3/E-AC-3 mapeada não tiver escrito um packet começando pelo sync word `0x0B77`, o corte é adiado; se a janela de um segmento passar sem esse packet, a sessão **falha** em vez de emitir um `moov` com `dac3`/`dec3` vazio. E esse primeiro corte faz **dois** flushes: com `+delay_moov` o primeiro emite só `ftyp`+`moov` e retorna, o segundo emite `moof`+`mdat`.
+5. Artefatos em disco: `init.mp4` (`ftyp` + `moov` já preenchido), `segment0.m4s`, `segment1.m4s`, …, mais `media.m3u8` e `master.m3u8`, escritos atomicamente. Como o muxer entrega tudo pelo mesmo pipe, quem separa o init segment do primeiro fragmento é o `ProAVInitBoundaryScanner`: um box-walk ISOBMFF que acumula bytes (teto de 8 MiB) até encontrar um `moof` top-level e corta ali — `size==1` (largesize) é tratado, e tamanho de box inválido derruba a sessão em vez de esperar para sempre. As playlists são **HLS v7** com `#EXT-X-MAP:URI="init.mp4"` e `#EXT-X-PLAYLIST-TYPE:EVENT`; `#EXT-X-ENDLIST` só aparece quando o remux termina.
 6. Gate de prontidão: quando há `minimumSegmentsBeforeReady` segmentos (padrão 2), a sessão dispara `onReady`. O `ProAVPlayer` então sobe o servidor e faz `innerPlayer.replace(url:options:)` com `http://127.0.0.1:<porta>/<dir>/master.m3u8`.
 7. Servidor: `NWListener` ligado a `127.0.0.1` numa **porta efêmera atribuída pelo SO**. Suporta `GET`/`HEAD`, `Range: bytes=` com `206 Partial Content`, `416`, `404` e rejeita paths contendo `..`. Content-Type `application/vnd.apple.mpegurl` para `.m3u8` e `video/mp4` para `mp4`/`m4s`/`m4v`.
 8. Workspace: raiz em `Caches/Lumen-ProAV` (fallback `temporaryDirectory`), com subdiretório por sessão. `purgeWorkspaces` limpa a raiz inteira no `init` do player.
 
 ### Compatibilidade e signaling
 
-`ProAVVideoSignaling(track:)` retorna `nil` — e portanto o engine **recusa a mídia e cai no fallback** — sempre que o vídeo não é HEVC, ou quando é Dolby Vision fora dos perfis suportados. O mapeamento:
+`ProAVVideoSignaling(track:convertDolbyVisionProfile7:)` retorna `nil` — e portanto o engine **recusa a mídia e cai no fallback** — sempre que o vídeo não é HEVC, ou quando é Dolby Vision fora dos perfis suportados. O mapeamento:
 
 | Caso | `codecTag` | `CODECS` | `VIDEO-RANGE` | `SUPPLEMENTAL-CODECS` |
 |---|---|---|---|---|
 | DV perfil 5, e perfil 8 com compat id 1 | `dvh1` | `dvh1.PP.LL` | `PQ` | — |
-| DV perfil 8 com compat id 4 | `hvc1` | `hvc1.…` | `HLG` | `dvhX.YY.ZZ/db4h` |
-| Outros perfis DV | — | recusa (`nil`) | — | — |
-| Sem DV | — | por `color_trc`: PQ → HDR10, ARIB B67 → HLG, senão SDR | — | — |
+| DV perfil 8 com compat id 4 | `hvc1` | `hvc1.…` | `HLG` | `dvh1.PP.LL/db4h` |
+| DV perfil 7, com `options.convertDolbyVisionProfile7` (default ligado) | `dvh1` | `dvh1.08.LL` | `PQ` | — |
+| Outros perfis DV (e perfil 7 com a opção desligada) | — | recusa (`nil`) | — | — |
+| Sem DV | `hvc1` | `hvc1.…`, e `VIDEO-RANGE` por `color_trc`: PQ → HDR10, ARIB B67 → HLG, senão SDR | — | — |
 
-Áudio, por `ProAVAudioStrategy`: EC-3 (Atmos), AC-3, AAC, FLAC e ALAC passam por **stream copy**; qualquer outro codec (DTS, TrueHD, PCM, Opus…) é **transcodificado para FLAC** por `ProAVAudioTranscoder` (S16 ou S32/24 bits, sample rate e layout de canais preservados, PTS regenerado por contagem de amostras). Se o transcoder não puder inicializar, a trilha de áudio é simplesmente descartada.
+Áudio, por `ProAVAudioStrategy`: EC-3, AC-3, AAC, FLAC e ALAC passam por **stream copy**; qualquer outro codec (DTS, TrueHD, PCM, Opus…) é **transcodificado para FLAC** por `ProAVAudioTranscoder` (S16 ou S32/24 bits, sample rate e layout de canais preservados, PTS regenerado por contagem de amostras). Se o transcoder não puder inicializar, a trilha de áudio é simplesmente descartada.
+
+A trilha de áudio também é anunciada na master playlist, como uma rendition `#EXT-X-MEDIA:TYPE=AUDIO` sem `URI` (o áudio está muxado na própria variante) referenciada por `AUDIO="main"`. O `CHANNELS` vem de `ch_layout.nb_channels`, **exceto** em E-AC-3 cujo `codecpar.profile` é `AV_PROFILE_EAC3_DDP_ATMOS`: aí o valor é `16/JOC`, que é como a HLS Authoring Specification pede para DD+ com Atmos. Quando a sondagem não fecha a contagem de canais (`nb_channels == 0`), o atributo é **omitido** em vez de sair como `CHANNELS="0"`.
+
+### Conversão de Dolby Vision perfil 7
+
+Perfil 7 é dual-layer (base layer + enhancement layer + RPU) e o AVFoundation não o reproduz. Com `KSOptions.convertDolbyVisionProfile7` (default ligado), o remux converte para **perfil 8.1 single-layer** enquanto copia o bitstream:
+
+1. `startProAVRemux` lê o `lengthSizeMinusOne` do `hvcC` (`DOVIPacketRewriter.hevcNALUnitLengthSize`). Se a extradata não for um `hvcC` — Annex-B vindo de MPEG-TS, por exemplo — a sessão falha antes do header e o playback cai no fallback, que é o comportamento que perfil 7 já tinha.
+2. O side data `AV_PKT_DATA_DOVI_CONF` do stream de **saída** é sobrescrito (`profile = 8`, `dv_bl_signal_compatibility_id = 1`, `el_present_flag = 0`, `dv_md_compression = 0`; major/minor/level/`rpu_present_flag`/`bl_present_flag` preservados da fonte). Como `dv_profile > 7`, o movenc escreve `dvvC` — não `dvcC`.
+3. Cada packet de vídeo passa por `DOVIPacketRewriter.rewrite(packet:nalLengthSize:)`, que percorre as NAL units length-prefixed, **descarta** as de tipo 63 (enhancement layer) e converte as de tipo 62 (RPU) com o libdovi vendorizado (`dovi_parse_unspec62_nalu` → `dovi_convert_rpu_with_mode(_, 2)` → `dovi_write_unspec62_nalu`). O modo 2 é o de perfil 8.1 com as curvas de mapping luma/chroma zeradas (no-op); o buffer devolvido pela lib já vem escapado para HEVC e com o header `0x7C01` na frente, então é escrito verbatim, só com o prefixo de tamanho recalculado. A reescrita acontece sobre a referência de saída — o packet do demuxer nunca é mutado.
+4. Qualquer erro do walker ou do libdovi derruba a sessão (`onFailure` → fallback), e se nenhum RPU tiver sido convertido até o primeiro corte de fragmento a sessão também falha — para não anunciar Dolby Vision sobre um stream sem metadata dinâmica.
 
 ### Pegadinhas do ProAV
 
-- **Seek é caro**: não existe seek dentro do HLS gerado. `seek(time:completion:)` derruba player e item e **re-remuxa a partir do novo ponto**; `startOffset` é somado ao tempo reportado. O mesmo vale para `select(track:)` de áudio.
+- **Seek é caro**: não existe seek dentro do HLS gerado. `seek(time:completion:)` derruba player e item e **re-remuxa a partir do novo ponto**; `startOffset` é somado ao tempo reportado. O mesmo vale para `select(track:)` de áudio. A exceção é `switchSource` (doc 02), que sobe um segundo remux em paralelo e só derruba o antigo no commit.
 - **Sem seleção automática**: nenhum código do `KSPlayerLayer` escolhe `ProAVPlayer`. É opt-in via `KSOptions.firstPlayerType`.
 - **Sem legendas embutidas**: o remux carrega apenas vídeo e uma trilha de áudio; legendas do container não entram na playlist.
-- **Atmos depende do muxer**: o caso EC-3 é marcado no código como aguardando suporte do muxer mp4 para escrever os campos JOC do box `dec3`. O passthrough do bitstream funciona; a sinalização explícita de Atmos na playlist não é gerada.
-- **Sem manipulação de RPU**: as RPUs Dolby Vision permanecem embutidas no bitstream HEVC e são interpretadas pelo decoder da Apple. Não há extração nem reinjeção neste caminho (isso só existe no decode por software do `KSMEPlayer`).
-- **Consumo de disco**: o workspace cresce enquanto o remux avança, e só é limpo na próxima inicialização do player.
+- **A sinalização de Atmos depende do primeiro packet de áudio**: o `dec3` só sai completo porque o `moov` é adiado (`+delay_moov`) até o muxer ter parseado um frame E-AC-3. Se a trilha mapeada não entregar um packet com sync word dentro da janela do primeiro segmento, a sessão falha de propósito — antes ela emitiria um `dec3` zerado. O `CHANNELS="16/JOC"` da playlist, por outro lado, vem do `codecpar.profile` (decoder), não do muxer: as duas metades da sinalização têm fontes independentes e podem, em tese, discordar.
+- **RPU só é manipulada no perfil 7**: em DV perfil 5 e 8 as RPUs seguem embutidas no bitstream HEVC, sem extração nem reinjeção, e quem as interpreta é o decoder da Apple. A única reescrita é a conversão de perfil 7 para 8.1 descrita acima.
+- **Consumo de disco**: o workspace cresce enquanto o remux avança, e só é limpo na próxima inicialização do player. `switchSource` marca o diretório do launch descartado para remoção (`requestCleanup`), que acontece quando aquele remux termina de fechar.
 
 ## Cache de disco por byte-range
 
