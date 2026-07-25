@@ -164,15 +164,4 @@ enum DOVIPacketRewriter {
         }
         return record
     }
-
-    static func profile81ConfigurationRecordBytes(preserving record: DOVIDecoderConfigurationRecord) -> [UInt8] {
-        profile81ConfigurationRecordBytes(preserving: [record.dv_version_major,
-                                                      record.dv_version_minor,
-                                                      record.dv_profile,
-                                                      record.dv_level,
-                                                      record.rpu_present_flag,
-                                                      record.el_present_flag,
-                                                      record.bl_present_flag,
-                                                      record.dv_bl_signal_compatibility_id])
-    }
 }

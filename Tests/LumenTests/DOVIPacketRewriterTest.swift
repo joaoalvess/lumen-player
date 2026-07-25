@@ -208,17 +208,4 @@ class DOVIPacketRewriterTest: XCTestCase {
         XCTAssertEqual(DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: [UInt8]()),
                        [1, 0, 8, 0, 1, 0, 1, 1, 0])
     }
-
-    func testProfile81ConfigurationRecordBytesFromRecord() {
-        let record = DOVIDecoderConfigurationRecord(dv_version_major: 1,
-                                                    dv_version_minor: 0,
-                                                    dv_profile: 7,
-                                                    dv_level: 6,
-                                                    rpu_present_flag: 1,
-                                                    el_present_flag: 1,
-                                                    bl_present_flag: 1,
-                                                    dv_bl_signal_compatibility_id: 6)
-        XCTAssertEqual(DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: record),
-                       [1, 0, 8, 6, 1, 0, 1, 1, 0])
-    }
 }
