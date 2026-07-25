@@ -280,17 +280,17 @@ open class SubtitleModel: ObservableObject {
         }
     }
 
-    public static var textColor: Color = .white
-    public static var textBackgroundColor: Color = .clear
+    public nonisolated(unsafe) static var textColor: Color = .white
+    public nonisolated(unsafe) static var textBackgroundColor: Color = .clear
     public static var textFont: UIFont {
         textBold ? .boldSystemFont(ofSize: textFontSize) : .systemFont(ofSize: textFontSize)
     }
 
-    public static var textFontSize = SubtitleModel.Size.standard.rawValue
-    public static var textBold = false
-    public static var textItalic = false
-    public static var textPosition = TextPosition()
-    public static var audioRecognizes = [any AudioRecognize]()
+    public nonisolated(unsafe) static var textFontSize = SubtitleModel.Size.standard.rawValue
+    public nonisolated(unsafe) static var textBold = false
+    public nonisolated(unsafe) static var textItalic = false
+    public nonisolated(unsafe) static var textPosition = TextPosition()
+    public nonisolated(unsafe) static var audioRecognizes = [any AudioRecognize]()
     private var subtitleDataSouces: [SubtitleDataSouce] = KSOptions.subtitleDataSouces
     @Published
     public private(set) var subtitleInfos = [any SubtitleInfo]()

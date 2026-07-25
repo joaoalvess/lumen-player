@@ -17,7 +17,7 @@ public protocol KSParseProtocol {
 }
 
 public extension KSOptions {
-    static var subtitleParses: [KSParseProtocol] = [AssParse(), VTTParse(), SrtParse()]
+    nonisolated(unsafe) static var subtitleParses: [KSParseProtocol] = [AssParse(), VTTParse(), SrtParse()]
 }
 
 public extension KSParseProtocol {

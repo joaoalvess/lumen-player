@@ -107,7 +107,7 @@ public final class MEPlayerItem: Sendable {
         Int(8 * (self?.videoTrack?.bitrate ?? 0))
     }
 
-    private static var onceInitial: Void = {
+    private nonisolated(unsafe) static var onceInitial: Void = {
         var result = avformat_network_init()
         av_log_set_callback { ptr, level, format, args in
             guard let format else {

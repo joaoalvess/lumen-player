@@ -9,7 +9,7 @@ import AVKit
 
 @available(tvOS 14.0, *)
 public class KSPictureInPictureController: AVPictureInPictureController {
-    private static var pipController: KSPictureInPictureController?
+    private nonisolated(unsafe) static var pipController: KSPictureInPictureController?
     private var originalViewController: UIViewController?
     private var view: KSPlayerLayer?
     private weak var viewController: UIViewController?

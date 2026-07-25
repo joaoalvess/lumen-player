@@ -35,8 +35,8 @@ public typealias UITouch = NSTouch
 public typealias UIEvent = NSEvent
 public typealias UIButton = KSButton
 public extension UIFontDescriptor.SymbolicTraits {
-    static var traitItalic = italic
-    static var traitBold = bold
+    static let traitItalic = italic
+    static let traitBold = bold
 }
 
 extension NSScreen {
@@ -352,16 +352,16 @@ public extension UIApplication {
 }
 
 public extension UIControl {
-    struct State: OptionSet {
+    struct State: OptionSet, Sendable {
         public var rawValue: UInt
         public init(rawValue: UInt) { self.rawValue = rawValue }
-        public static var normal = State(rawValue: 1 << 0)
-        public static var highlighted = State(rawValue: 1 << 1)
-        public static var disabled = State(rawValue: 1 << 2)
-        public static var selected = State(rawValue: 1 << 3)
-        public static var focused = State(rawValue: 1 << 4)
-        public static var application = State(rawValue: 1 << 5)
-        public static var reserved = State(rawValue: 1 << 6)
+        public static let normal = State(rawValue: 1 << 0)
+        public static let highlighted = State(rawValue: 1 << 1)
+        public static let disabled = State(rawValue: 1 << 2)
+        public static let selected = State(rawValue: 1 << 3)
+        public static let focused = State(rawValue: 1 << 4)
+        public static let application = State(rawValue: 1 << 5)
+        public static let reserved = State(rawValue: 1 << 6)
     }
 }
 

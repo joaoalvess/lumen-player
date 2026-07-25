@@ -13,9 +13,9 @@ import UIKit
 #endif
 
 extension DisplayEnum {
-    private static var planeDisplay = PlaneDisplayModel()
-    private static var vrDiaplay = VRDisplayModel()
-    private static var vrBoxDiaplay = VRBoxDisplayModel()
+    private nonisolated(unsafe) static var planeDisplay = PlaneDisplayModel()
+    private nonisolated(unsafe) static var vrDiaplay = VRDisplayModel()
+    private nonisolated(unsafe) static var vrBoxDiaplay = VRBoxDisplayModel()
 
     func set(encoder: MTLRenderCommandEncoder) {
         switch self {

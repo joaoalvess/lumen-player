@@ -77,11 +77,11 @@ public protocol SearchSubtitleDataSouce: SubtitleDataSouce {
 }
 
 public extension KSOptions {
-    static var subtitleDataSouces: [SubtitleDataSouce] = [DirectorySubtitleDataSouce()]
+    nonisolated(unsafe) static var subtitleDataSouces: [SubtitleDataSouce] = [DirectorySubtitleDataSouce()]
 }
 
 public class PlistCacheSubtitleDataSouce: CacheSubtitleDataSouce {
-    public static let singleton = PlistCacheSubtitleDataSouce()
+    public nonisolated(unsafe) static let singleton = PlistCacheSubtitleDataSouce()
     public var infos = [any SubtitleInfo]()
     private let srtCacheInfoPath: String
     // 因为plist不能保存URL
