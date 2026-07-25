@@ -190,6 +190,10 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         }
     }
 
+    var isFailed: Bool {
+        withLock { failed }
+    }
+
     func fail(_ error: NSError) {
         withLock { failLocked(error) }
     }

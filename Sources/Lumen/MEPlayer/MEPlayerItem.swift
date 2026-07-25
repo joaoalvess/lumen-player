@@ -435,6 +435,7 @@ extension MEPlayerItem {
     }
 
     private func writeProAVPacket(corePacket: UnsafeMutablePointer<AVPacket>, outputFormatCtx: UnsafeMutablePointer<AVFormatContext>, formatCtx: UnsafeMutablePointer<AVFormatContext>, session: ProAVRemuxSession) {
+        guard !session.isFailed else { return }
         let index = Int(corePacket.pointee.stream_index)
         guard let outputIndex = streamMapping[index],
               let inputStream = formatCtx.pointee.streams[index],
@@ -488,7 +489,6 @@ extension MEPlayerItem {
                 }
             } catch {
                 av_packet_unref(outputPacket)
-                remuxDOVIConversionNALLengthSize = nil
                 session.fail(NSError(description: "ProAV dolby vision conversion failed"))
                 return
             }
