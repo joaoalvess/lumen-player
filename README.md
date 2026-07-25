@@ -23,8 +23,8 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 
 **Picture & sound**
 - 🎞️ Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` and carries the `dvcC`/`dvvC` configuration box through, so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
-- 🧬 **Profile 7 is converted to 8.1** on the way through the remux: the enhancement-layer NAL units are dropped and the RPU is rewritten single-layer with libdovi, turning a format `AVPlayer` refuses outright into one it plays. Implemented and unit-tested; not yet checked against a real Dolby Vision display
-- 🔉 E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. For Atmos the `moov` is held back until the muxer has parsed an audio frame, so the `dec3` box comes out filled instead of empty, and the playlist declares `CHANNELS="16/JOC"` when the decoder reports the DD+ Atmos profile. Same caveat: the code path is there, the receiver check isn't done
+- 🧬 **Profile 7 is converted to 8.1** on the way through the remux: the enhancement-layer NAL units are dropped and the RPU is rewritten single-layer with libdovi. Without that conversion the remux engine refuses profile 7 outright and playback falls back to the FFmpeg engine. Implemented and unit-tested; not yet checked against a real Dolby Vision display
+- 🔉 E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. For Atmos the `moov` is held back until the muxer has parsed an audio frame — which is what lets it write the JOC fields of the `dec3` box — and the playlist declares `CHANNELS="16/JOC"` when the decoder reports the DD+ Atmos profile. Same caveat: the code path is there, the receiver check isn't done
 - 🎛️ TrueHD and DTS are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone
 - 📼 MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
 - 🎚️ The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
