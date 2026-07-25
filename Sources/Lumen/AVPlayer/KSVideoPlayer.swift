@@ -69,7 +69,7 @@ extension KSVideoPlayer: UIViewRepresentable {
             _ = context.coordinator.makeView(url: url, options: options)
             return
         }
-        guard playerLayer.url != url else { return }
+        guard (playerLayer.pendingSourceSwitchURL ?? playerLayer.url) != url else { return }
         if options.isSourceSwitchEnabled {
             context.coordinator.switchSource(url: url, options: options)
         } else {
@@ -204,6 +204,9 @@ extension KSVideoPlayer: UIViewRepresentable {
             playerLayer.switchSource(url: url, options: options) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.playerLayer?.url == url else { return }
+                    #if os(tvOS)
+                    self.scrubThumbnails.shutdown()
+                    #endif
                     self.subtitleModel.url = url
                 }
             }
