@@ -87,7 +87,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     }
 
     var closedSegmentsDuration: TimeInterval {
-        withLock { segments.reduce(0) { $0 + $1.duration } }
+        withLock { segments.map(\.duration).reduce(0, +) }
     }
 
     func begin(signaling: ProAVVideoSignaling, audioSignaling: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {
