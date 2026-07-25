@@ -66,7 +66,7 @@ Montagem via SPM:
 ## Relação com outros subsistemas
 
 - **MEPlayer (kernel FFmpeg)**: maior consumidor dos binary targets — demux/decode/filter/resample importam `FFmpegKit`, `Libavcodec`, `Libavformat`, `Libavfilter`, `Libavutil`, `Libswresample`, `Libswscale` (`Sources/Lumen/MEPlayer/*.swift`). Qualquer upgrade de FFmpeg impacta primeiro esse subsistema (a ABI das structs de C atravessa `AVFFmpegExtension.swift`).
-- **ProAV (kernel de remux)**: usa o muxer `mp4` do `Libavformat` e o encoder FLAC do `Libavcodec`; depende de `Libdovi` indiretamente, via os metadados Dolby Vision que o FFmpeg expõe como side data.
+- **ProAV (kernel de remux)**: usa o muxer `mp4` do `Libavformat` e o encoder FLAC do `Libavcodec`; consome os metadados Dolby Vision que o FFmpeg expõe como side data (`AV_PKT_DATA_DOVI_CONF`) e, na conversão de perfil 7, importa **`Libdovi` diretamente** (`import Libdovi` em `DOVIPacketRewriter.swift`, API `dovi_*` de RPU) — é o único ponto do fork que chama esse binário.
 - **Metal (render)**: consome o recurso `Shaders.metal` processado pelo manifesto e importa `Libavutil` para pixel formats (`PixelBufferProtocol.swift`).
 - **AVPlayer (kernel AVFoundation + KSOptions/KSPlayerLayer)**: único consumidor do target `DisplayCriteria`; `PlayerDefines.swift` hospeda o shim de bundle e o enum `DynamicRange` cujos raw values alimentam a API privada.
 - **Subtitle**: hoje 100% Swift (parse SRT/VTT/ASS próprio + `SubtitleDecode` via FFmpeg + `EmbeddedFontRegistry` via CoreText); é o subsistema que ganharia o produto `libass` se ele for reativado no manifesto (ver Pontos de extensão).

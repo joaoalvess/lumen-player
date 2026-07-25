@@ -29,7 +29,7 @@ Resumo do que existe hoje no fork, por área. "Parcial" significa que há infrae
 | Aceleração de hardware (VideoToolbox) | hwaccel dentro do `FFmpegDecode` (default) + `VTDecompressionSession` (doc 04) |
 | Decode Annex-B assíncrono por hardware (live) | `VideoToolboxDecode` + `asynchronousDecompression` (doc 04) |
 | Reprodução 4K/HDR/HDR10 | displayLayer + `CAEDRMetadata` + colorspaces BT.2020 (doc 06) |
-| Dolby Vision e Atmos nativos | `ProAVPlayer`: remux para HLS fMP4 com signaling `dvh1`/`hvc1` e passthrough EC-3 (doc 03) |
+| Dolby Vision e Atmos nativos | `ProAVPlayer`: remux para HLS fMP4 com signaling `dvh1`/`hvc1`, box `dvcC`/`dvvC` levado adiante pelo muxer e passthrough EC-3/AC-3 (doc 03) |
 | Vídeo 360°/panorama | `SphereDisplayModel`/VR/VRBox + `MotionSensor` (doc 06) |
 | Picture in Picture | `KSPictureInPictureController` sobre `AVPictureInPictureController` (doc 02) |
 | Loop de reprodução sem emenda | `loopPacketQueue` gapless no MEPlayer; `AVPlayerLooper` no KSAVPlayer (docs 02/03) |
@@ -48,6 +48,10 @@ Resumo do que existe hoje no fork, por área. "Parcial" significa que há infrae
 
 | Capacidade | O que existe hoje / o que falta |
 |---|---|
+| Sinalização de Atmos (JOC) no remux | O `moov` é adiado (`+delay_moov`) até o muxer parsear o primeiro frame E-AC-3, para o `dec3` sair preenchido, e a master playlist declara `CHANNELS="16/JOC"` quando o decoder reporta `AV_PROFILE_EAC3_DDP_ATMOS` (doc 03). **Falta validar em hardware** que o receiver acende Atmos |
+| Dolby Vision perfil 7 no remux | `DOVIPacketRewriter` converte para 8.1 single-layer: NAL 63 descartada, RPU convertida pelo libdovi (modo 2) e `dvvC` reescrito com `profile 8`/`compat 1` (doc 03); opt-out por `KSOptions.convertDolbyVisionProfile7`. **Falta validar em hardware** com amostras MEL/FEL |
+| Cache em memória para seek em janela curta | Camada 1 pronta: seek **para a frente** dentro da janela de packets já bufferizada é servido da RAM, sem `avformat_seek_file` (`KSOptions.isMemorySeekEnabled`, default ligado, doc 03). Falta a camada 2 — anel de retenção alinhado por keyframe para seek **para trás** |
+| Troca de vídeo com atraso zero | `switchSource` troca a fonte sem derrubar o player (doc 02), opt-in por `options.isSourceSwitchEnabled`. No `ProAVPlayer` a reprodução ainda rebobina pela latência do remux novo; não há prewarm especulativo de candidatos |
 | Metadados dinâmicos Dolby Vision no caminho MEPlayer | No `ProAVPlayer` o DV é nativo. No `KSMEPlayer`, DV passa como passthrough pelo displayLayer; RPU/metadata são lidos e **descartados** no `FFmpegDecode`; o shader `displayYCCTexture` (P5) existe e não é usado |
 | Metadados dinâmicos HDR10+ | HDR10 estático vira `CAEDRMetadata`; side data `DYNAMIC_HDR_PLUS` é lido e jogado fora |
 | De-interlace por hardware | `yadif_videotoolbox` só se configurado à mão; o auto-detect injeta `yadif` por software |
@@ -63,7 +67,7 @@ Resumo do que existe hoje no fork, por área. "Parcial" significa que há infrae
 
 ### Ausentes
 
-Upscaling de vídeo; cache em memória para seek em janela curta; saída de vídeo para uma segunda tela; troca de vídeo com atraso zero; passthrough de áudio por Wi-Fi; rewind de transmissão ao vivo; Blu-ray/ISO/DVD; reprodução simultânea de URLs separadas de áudio e vídeo; Dolby AC-4; decode de AV1 por hardware; ajuste de saturação/brilho/contraste; legendas de imagem externas (SUP); legendas principal e secundária simultâneas; legendas palavra a palavra; legendas com efeitos HDR; tradução de legendas; geração/tradução de legendas por IA offline; uso da aparência de legendas do sistema.
+Upscaling de vídeo; saída de vídeo para uma segunda tela; passthrough de áudio por Wi-Fi; rewind de transmissão ao vivo; Blu-ray/ISO/DVD; reprodução simultânea de URLs separadas de áudio e vídeo; Dolby AC-4; decode de AV1 por hardware; ajuste de saturação/brilho/contraste; legendas de imagem externas (SUP); legendas principal e secundária simultâneas; legendas palavra a palavra; legendas com efeitos HDR; tradução de legendas; geração/tradução de legendas por IA offline; uso da aparência de legendas do sistema.
 
 Notas:
 
