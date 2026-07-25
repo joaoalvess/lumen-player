@@ -345,28 +345,20 @@ final class AsyncPlayerItemTrack<Frame: MEFrame>: SyncPlayerItemTrack<Frame> {
         pendingMemorySeek = nil
     }
 
-    private func performMemorySeek(_ pending: PendingMemorySeek) {
-        let target = pending.target
+    private func startPacket(atOrBefore target: TimeInterval) -> Packet? {
         let needsKeyFrame = mediaType == .video
         var chosen: Packet?
-        var precedingCount = 0
-        var index = 0
         packetQueue.scan { packet in
             if packet.seconds <= target, !needsKeyFrame || packet.isKeyFrame {
                 chosen = packet
-                precedingCount = index
             }
-            index += 1
             return true
         }
-        guard let chosen else {
-            if state == .decoding {
-                pending.onFailure()
-            }
-            return
-        }
-        _ = packetQueue.pop(count: precedingCount)
-        guard packetQueue.peekEdges()?.head === chosen else {
+        return chosen
+    }
+
+    private func performMemorySeek(_ pending: PendingMemorySeek) {
+        guard let chosen = startPacket(atOrBefore: pending.target), packetQueue.drain(upTo: chosen) else {
             if state == .decoding {
                 pending.onFailure()
             }

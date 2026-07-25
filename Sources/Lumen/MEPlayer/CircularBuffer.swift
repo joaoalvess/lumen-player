@@ -145,24 +145,6 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         }
     }
 
-    func pop(count: Int) -> Int {
-        condition.lock()
-        defer { condition.unlock() }
-        if destroyed {
-            return 0
-        }
-        var popped = 0
-        while popped < count, headIndex != tailIndex {
-            _buffer[Int(headIndex & mask)] = nil
-            headIndex &+= 1
-            popped += 1
-        }
-        if popped > 0 {
-            condition.broadcast()
-        }
-        return popped
-    }
-
     public func search(where predicate: (Item) -> Bool) -> [Item] {
         condition.lock()
         defer { condition.unlock() }
@@ -217,6 +199,33 @@ public class CircularBuffer<Item: ObjectQueueItem> {
         _buffer = newBacking
         maxCount = newCapacity
         mask = UInt(maxCount - 1)
+    }
+}
+
+extension CircularBuffer where Item: AnyObject {
+    func drain(upTo item: Item) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        if destroyed {
+            return false
+        }
+        var index = headIndex
+        while index != tailIndex, _buffer[Int(index & mask)] !== item {
+            index &+= 1
+        }
+        if index == tailIndex {
+            return false
+        }
+        var popped = 0
+        while headIndex != index {
+            _buffer[Int(headIndex & mask)] = nil
+            headIndex &+= 1
+            popped += 1
+        }
+        if popped > 0 {
+            condition.broadcast()
+        }
+        return true
     }
 }
 

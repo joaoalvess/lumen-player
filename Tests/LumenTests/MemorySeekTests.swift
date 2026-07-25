@@ -22,22 +22,15 @@ class MemorySeekTests: XCTestCase {
         return queue
     }
 
-    private func lastCandidate(in queue: CircularBuffer<FakeQueueItem>, upTo target: TimeInterval, needsKey: Bool) -> (item: FakeQueueItem, precedingCount: Int)? {
+    private func lastCandidate(in queue: CircularBuffer<FakeQueueItem>, upTo target: TimeInterval, needsKey: Bool) -> FakeQueueItem? {
         var chosen: FakeQueueItem?
-        var precedingCount = 0
-        var index = 0
         queue.scan { item in
             if item.seconds <= target, item.isKey || needsKey == false {
                 chosen = item
-                precedingCount = index
             }
-            index += 1
             return true
         }
-        guard let chosen else {
-            return nil
-        }
-        return (chosen, precedingCount)
+        return chosen
     }
 
     func testPeekEdgesOnEmptyQueueReturnsNil() {
@@ -105,9 +98,7 @@ class MemorySeekTests: XCTestCase {
             FakeQueueItem(timestamp: 5000),
         ]
         let queue = makeQueue(items)
-        let candidate = lastCandidate(in: queue, upTo: 3.5, needsKey: true)
-        XCTAssertTrue(candidate?.item === items[2])
-        XCTAssertEqual(candidate?.precedingCount, 2)
+        XCTAssertTrue(lastCandidate(in: queue, upTo: 3.5, needsKey: true) === items[2])
     }
 
     func testScanFindsLastItemBeforeTargetWhenKeyframesDoNotMatter() {
@@ -117,9 +108,7 @@ class MemorySeekTests: XCTestCase {
             FakeQueueItem(timestamp: 2000),
         ]
         let queue = makeQueue(items)
-        let candidate = lastCandidate(in: queue, upTo: 1.5, needsKey: false)
-        XCTAssertTrue(candidate?.item === items[1])
-        XCTAssertEqual(candidate?.precedingCount, 1)
+        XCTAssertTrue(lastCandidate(in: queue, upTo: 1.5, needsKey: false) === items[1])
     }
 
     func testScanFindsNothingWhenNoKeyframePrecedesTarget() {
@@ -132,7 +121,7 @@ class MemorySeekTests: XCTestCase {
         XCTAssertEqual(queue.count, 2)
     }
 
-    func testPopCountLeavesKeyframeAtHead() {
+    func testDrainLeavesKeyframeAtHead() {
         let items = [
             FakeQueueItem(timestamp: 0, isKey: true),
             FakeQueueItem(timestamp: 1000),
@@ -144,23 +133,46 @@ class MemorySeekTests: XCTestCase {
             XCTFail("expected a keyframe candidate")
             return
         }
-        XCTAssertEqual(queue.pop(count: candidate.precedingCount), 2)
+        XCTAssertTrue(queue.drain(upTo: candidate))
         XCTAssertTrue(queue.peekEdges()?.head === items[2])
         XCTAssertEqual(queue.count, 2)
     }
 
-    func testPopCountBeyondQueueSizeDrainsEverything() {
+    func testDrainToHeadKeepsQueueIntact() {
         let items = (0 ..< 3).map { FakeQueueItem(timestamp: Int64($0)) }
         let queue = makeQueue(items)
-        XCTAssertEqual(queue.pop(count: 10), 3)
-        XCTAssertEqual(queue.count, 0)
-        XCTAssertNil(queue.peekEdges())
+        XCTAssertTrue(queue.drain(upTo: items[0]))
+        XCTAssertEqual(queue.count, 3)
+        XCTAssertTrue(queue.peekEdges()?.head === items[0])
     }
 
-    func testPopCountZeroPopsNothing() {
-        let queue = makeQueue([FakeQueueItem(timestamp: 0)])
-        XCTAssertEqual(queue.pop(count: 0), 0)
-        XCTAssertEqual(queue.count, 1)
+    func testDrainKeepsQueueIntactWhenItemIsNotQueued() {
+        let items = (0 ..< 3).map { FakeQueueItem(timestamp: Int64($0)) }
+        let queue = makeQueue(items)
+        XCTAssertFalse(queue.drain(upTo: FakeQueueItem(timestamp: 1)))
+        XCTAssertEqual(queue.count, 3)
+        XCTAssertTrue(queue.peekEdges()?.head === items[0])
+    }
+
+    func testDrainOnEmptyQueueFails() {
+        let queue = CircularBuffer<FakeQueueItem>()
+        XCTAssertFalse(queue.drain(upTo: FakeQueueItem(timestamp: 0)))
+        XCTAssertEqual(queue.count, 0)
+    }
+
+    func testDrainAfterConcurrentFlushDiscardsNothing() {
+        let items = (0 ..< 4).map { FakeQueueItem(timestamp: Int64($0) * 1000) }
+        let queue = makeQueue(items)
+        guard let candidate = lastCandidate(in: queue, upTo: 2.5, needsKey: false) else {
+            XCTFail("expected a candidate")
+            return
+        }
+        queue.flush()
+        let refilled = (0 ..< 2).map { FakeQueueItem(timestamp: Int64($0) * 1000 + 10000) }
+        refilled.forEach { queue.push($0) }
+        XCTAssertFalse(queue.drain(upTo: candidate))
+        XCTAssertEqual(queue.count, 2)
+        XCTAssertTrue(queue.peekEdges()?.head === refilled[0])
     }
 
     private let videoTimebase = Timebase(num: 1, den: 1000)
