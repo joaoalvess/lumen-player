@@ -86,6 +86,10 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         withLock { _videoSignaling }
     }
 
+    var closedSegmentsDuration: TimeInterval {
+        withLock { segments.reduce(0) { $0 + $1.duration } }
+    }
+
     func begin(signaling: ProAVVideoSignaling, audioSignaling: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {
         withLock {
             _videoSignaling = signaling
