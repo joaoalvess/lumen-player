@@ -8,12 +8,16 @@ struct ProAVInitBoundaryScanner {
     }
 
     private static let fragmentBoxType = UInt64(0x6D6F_6F66)
+    private static let bufferLimit = 8 * 1024 * 1024
 
     private var buffer = Data()
     private var parseOffset = 0
 
     mutating func consume(_ data: Data) -> Outcome {
         buffer.append(data)
+        guard buffer.count <= Self.bufferLimit else {
+            return .malformed
+        }
         while buffer.count - parseOffset >= 8 {
             let compactSize = value(at: parseOffset, count: 4)
             let boxType = value(at: parseOffset + 4, count: 4)
@@ -27,7 +31,7 @@ struct ProAVInitBoundaryScanner {
             }
             let boxSize: UInt64
             if compactSize == 0 {
-                return .buffering
+                return .malformed
             } else if compactSize == 1 {
                 guard buffer.count - parseOffset >= 16 else { return .buffering }
                 boxSize = value(at: parseOffset + 8, count: 8)

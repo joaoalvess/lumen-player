@@ -84,11 +84,19 @@ class ProAVInitBoundaryScannerTest: XCTestCase {
         XCTAssertEqual(scanner.consume(fragmentData), .split(initSegment: initData, remainder: fragmentData))
     }
 
-    func testZeroSizeBoxNeverSplits() {
+    func testZeroSizeBoxIsMalformed() {
         let data = box("ftyp", payloadSize: 16) + zeroSizeBox("mdat", payloadSize: 64) + box("moof", payloadSize: 24)
         var scanner = ProAVInitBoundaryScanner()
-        XCTAssertEqual(scanner.consume(data), .buffering)
-        XCTAssertEqual(scanner.consume(box("moof", payloadSize: 8)), .buffering)
+        XCTAssertEqual(scanner.consume(data), .malformed)
+    }
+
+    func testBoundarylessStreamStopsBufferingAtTheLimit() {
+        var header = Data()
+        header.append(contentsOf: withUnsafeBytes(of: UInt32(0xFFFF_FFF0).bigEndian) { Array($0) })
+        header.append(contentsOf: Array("moov".utf8))
+        var scanner = ProAVInitBoundaryScanner()
+        XCTAssertEqual(scanner.consume(header), .buffering)
+        XCTAssertEqual(scanner.consume(Data(repeating: 0xAB, count: 8 * 1024 * 1024 + 1)), .malformed)
     }
 
     func testUndersizedBoxIsMalformed() {
