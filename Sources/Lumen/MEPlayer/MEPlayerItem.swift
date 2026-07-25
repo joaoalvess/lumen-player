@@ -33,6 +33,7 @@ public final class MEPlayerItem: Sendable {
     private var remuxFirstCutDeferredAt: Double?
     private var remuxDOVIConversionNALLengthSize: Int?
     private var remuxDOVIConvertedRPUCount = 0
+    private var remuxHDR10PlusScanNALLengthSize: Int?
     private var openOperation: BlockOperation?
     private var readOperation: BlockOperation?
     private var closeOperation: BlockOperation?
@@ -409,7 +410,37 @@ extension MEPlayerItem {
         remuxStreamsAwaitingFirstPacket = Set(streamMapping.compactMap { inputIndex, outputIndex in
             inputIndex == remuxTranscodeStreamIndex ? nil : outputIndex
         })
+        prepareDynamicHDR10PlusScan(signaling: signaling, track: videoAssetTrack, session: session)
         outputPacket = av_packet_alloc()
+    }
+
+    private func prepareDynamicHDR10PlusScan(signaling: ProAVVideoSignaling, track: FFmpegAssetTrack, session: ProAVRemuxSession) {
+        remuxHDR10PlusScanNALLengthSize = nil
+        guard signaling.addingDynamicHDR10Plus().supplementalCodecs != signaling.supplementalCodecs else {
+            return
+        }
+        let codecpar = track.codecpar
+        if av_packet_side_data_get(codecpar.coded_side_data, codecpar.nb_coded_side_data, AV_PKT_DATA_DYNAMIC_HDR10_PLUS) != nil {
+            session.noteDynamicHDR10Plus()
+            return
+        }
+        remuxHDR10PlusScanNALLengthSize = DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: codecpar.extradata, size: codecpar.extradata_size)
+    }
+
+    private func scanDynamicHDR10Plus(corePacket: UnsafeMutablePointer<AVPacket>, session: ProAVRemuxSession) {
+        guard let nalLengthSize = remuxHDR10PlusScanNALLengthSize else { return }
+        guard !remuxMoovWritten else {
+            remuxHDR10PlusScanNALLengthSize = nil
+            return
+        }
+        var detected = av_packet_get_side_data(corePacket, AV_PKT_DATA_DYNAMIC_HDR10_PLUS, nil) != nil
+        if !detected, corePacket.pointee.size > 0, let data = corePacket.pointee.data {
+            let payload = Data(bytesNoCopy: data, count: Int(corePacket.pointee.size), deallocator: .none)
+            detected = ProAVHDR10PlusScanner.containsHDR10Plus(payload: payload, nalLengthSize: nalLengthSize)
+        }
+        guard detected else { return }
+        remuxHDR10PlusScanNALLengthSize = nil
+        session.noteDynamicHDR10Plus()
     }
 
     private func overrideDolbyVisionConfigurationRecord(codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
@@ -455,6 +486,7 @@ extension MEPlayerItem {
         }
         guard let outputPacket else { return }
         if outputStream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO {
+            scanDynamicHDR10Plus(corePacket: corePacket, session: session)
             let timestamp = corePacket.pointee.pts == Int64.min ? corePacket.pointee.dts : corePacket.pointee.pts
             if timestamp != Int64.min {
                 let seconds = Timebase(inputStream.pointee.time_base).cmtime(for: timestamp).seconds
