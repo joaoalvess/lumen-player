@@ -9,16 +9,18 @@ struct ProAVVideoSignaling {
     let videoRange: String
     let supplementalCodecs: String?
     let preferredDynamicRange: DynamicRange
+    let convertsDolbyVisionProfile7: Bool
 
-    init(codecTag: String, codecsAttribute: String, videoRange: String, supplementalCodecs: String?, preferredDynamicRange: DynamicRange) {
+    init(codecTag: String, codecsAttribute: String, videoRange: String, supplementalCodecs: String?, preferredDynamicRange: DynamicRange, convertsDolbyVisionProfile7: Bool = false) {
         self.codecTag = codecTag
         self.codecsAttribute = codecsAttribute
         self.videoRange = videoRange
         self.supplementalCodecs = supplementalCodecs
         self.preferredDynamicRange = preferredDynamicRange
+        self.convertsDolbyVisionProfile7 = convertsDolbyVisionProfile7
     }
 
-    init?(track: FFmpegAssetTrack) {
+    init?(track: FFmpegAssetTrack, convertDolbyVisionProfile7: Bool) {
         guard track.codecpar.codec_id == AV_CODEC_ID_HEVC else { return nil }
         let level = track.codecpar.level > 0 ? Int(track.codecpar.level) : 153
         let hevcProfileSignal = track.codecpar.profile == 1 ? "1.6" : "2.4"
@@ -32,12 +34,21 @@ struct ProAVVideoSignaling {
                 videoRange = "PQ"
                 supplementalCodecs = nil
                 preferredDynamicRange = .dolbyVision
+                convertsDolbyVisionProfile7 = false
             case (8, 4):
                 codecTag = "hvc1"
                 codecsAttribute = hevcCodecs
                 videoRange = "HLG"
                 supplementalCodecs = "\(doviCodecs)/db4h"
                 preferredDynamicRange = .dolbyVision
+                convertsDolbyVisionProfile7 = false
+            case (7, _) where convertDolbyVisionProfile7:
+                codecTag = "dvh1"
+                codecsAttribute = String(format: "dvh1.08.%02d", Int(dovi.dv_level))
+                videoRange = "PQ"
+                supplementalCodecs = nil
+                preferredDynamicRange = .dolbyVision
+                convertsDolbyVisionProfile7 = true
             default:
                 return nil
             }
@@ -45,6 +56,7 @@ struct ProAVVideoSignaling {
             codecTag = "hvc1"
             codecsAttribute = hevcCodecs
             supplementalCodecs = nil
+            convertsDolbyVisionProfile7 = false
             switch track.codecpar.color_trc {
             case AVCOL_TRC_SMPTE2084:
                 videoRange = "PQ"

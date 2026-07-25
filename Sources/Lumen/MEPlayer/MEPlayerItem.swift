@@ -30,6 +30,7 @@ public final class MEPlayerItem: Sendable {
     private var remuxStreamsAwaitingFirstPacket = Set<Int>()
     private var remuxStreamsRequiringParsedHeader = Set<Int>()
     private var remuxFirstCutDeferredAt: Double?
+    private var remuxDOVIConversionNALLengthSize: Int?
     private var openOperation: BlockOperation?
     private var readOperation: BlockOperation?
     private var closeOperation: BlockOperation?
@@ -306,10 +307,18 @@ extension MEPlayerItem {
             return
         }
         guard let videoAssetTrack = assetTracks.first(where: { $0.mediaType == .video && $0.isEnabled }),
-              let signaling = ProAVVideoSignaling(track: videoAssetTrack)
+              let signaling = ProAVVideoSignaling(track: videoAssetTrack, convertDolbyVisionProfile7: options.convertDolbyVisionProfile7)
         else {
             error = NSError(description: "ProAV video signaling unsupported")
             return
+        }
+        remuxDOVIConversionNALLengthSize = nil
+        if signaling.convertsDolbyVisionProfile7 {
+            guard let nalLengthSize = DOVIPacketRewriter.hevcNALUnitLengthSize(hvcC: videoAssetTrack.codecpar.extradata, size: videoAssetTrack.codecpar.extradata_size) else {
+                error = NSError(description: "ProAV dolby vision conversion unsupported")
+                return
+            }
+            remuxDOVIConversionNALLengthSize = nalLengthSize
         }
         var ret = avformat_alloc_output_context2(&outputFormatCtx, nil, "mp4", nil)
         guard let outputFormatCtx else {
@@ -328,6 +337,12 @@ extension MEPlayerItem {
         }
         avcodec_parameters_copy(outputVideoStream.pointee.codecpar, inputVideoStream.pointee.codecpar)
         outputVideoStream.pointee.codecpar.pointee.codec_tag = signaling.codecTagValue.bigEndian
+        if remuxDOVIConversionNALLengthSize != nil {
+            guard let outputCodecpar = outputVideoStream.pointee.codecpar, overrideDolbyVisionConfigurationRecord(codecpar: outputCodecpar) else {
+                error = NSError(description: "ProAV dolby vision conversion unsupported")
+                return
+            }
+        }
         outputVideoStream.pointee.time_base = inputVideoStream.pointee.time_base
         streamMapping[Int(videoAssetTrack.trackID)] = 0
         var audioSignaling: ProAVAudioSignaling?
@@ -391,6 +406,31 @@ extension MEPlayerItem {
         outputPacket = av_packet_alloc()
     }
 
+    private func overrideDolbyVisionConfigurationRecord(codecpar: UnsafeMutablePointer<AVCodecParameters>) -> Bool {
+        let existing = av_packet_side_data_get(codecpar.pointee.coded_side_data, codecpar.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF)
+        if let existing, existing.pointee.size >= 9, let data = existing.pointee.data {
+            let record = DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: Array(UnsafeBufferPointer(start: data, count: 9)))
+            for index in 0 ..< record.count {
+                data[index] = record[index]
+            }
+            return true
+        }
+        var source = [UInt8]()
+        if let existing, let data = existing.pointee.data {
+            source = Array(UnsafeBufferPointer(start: data, count: min(existing.pointee.size, 9)))
+        }
+        let record = DOVIPacketRewriter.profile81ConfigurationRecordBytes(preserving: source)
+        guard let sideData = av_packet_side_data_new(&codecpar.pointee.coded_side_data, &codecpar.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF, record.count, 0),
+              let data = sideData.pointee.data
+        else {
+            return false
+        }
+        for index in 0 ..< record.count {
+            data[index] = record[index]
+        }
+        return true
+    }
+
     private func writeProAVPacket(corePacket: UnsafeMutablePointer<AVPacket>, outputFormatCtx: UnsafeMutablePointer<AVFormatContext>, formatCtx: UnsafeMutablePointer<AVFormatContext>, session: ProAVRemuxSession) {
         let index = Int(corePacket.pointee.stream_index)
         guard let outputIndex = streamMapping[index],
@@ -436,6 +476,15 @@ extension MEPlayerItem {
             }
         }
         av_packet_ref(outputPacket, corePacket)
+        if let nalLengthSize = remuxDOVIConversionNALLengthSize, outputStream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO {
+            do {
+                try DOVIPacketRewriter.rewrite(packet: outputPacket, nalLengthSize: nalLengthSize)
+            } catch {
+                av_packet_unref(outputPacket)
+                session.fail(NSError(description: "ProAV dolby vision conversion failed"))
+                return
+            }
+        }
         outputPacket.pointee.stream_index = Int32(outputIndex)
         av_packet_rescale_ts(outputPacket, inputStream.pointee.time_base, outputStream.pointee.time_base)
         outputPacket.pointee.pos = -1
