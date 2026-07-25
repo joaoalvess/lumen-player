@@ -274,7 +274,8 @@ public final class ProAVPlayer {
         }
         let masterURL = serverBaseURL.appendingPathComponent(pending.launch.directoryName).appendingPathComponent(ProAVRemuxSession.masterPlaylistName)
         pendingSourceSwitch?.innerSwitchStarted = true
-        innerPlayer.switchSource(url: masterURL, options: pending.options) { [weak self] success in
+        let candidateOrigin = pending.launch.session.playlistStartSeconds ?? pending.startOffset
+        innerPlayer.switchSource(url: masterURL, options: pending.options, resumeShift: timelineOrigin - candidateOrigin) { [weak self] success in
             runOnMainThread {
                 guard let self, self.pendingSourceSwitch?.launch.session === pending.launch.session else { return }
                 if success {
