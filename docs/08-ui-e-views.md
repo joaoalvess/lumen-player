@@ -8,7 +8,7 @@ Documento técnico do subsistema de interface: a hierarquia de views UIKit/AppKi
 - **Camada de compatibilidade**: no macOS, `AppKitExtend.swift` cria typealiases (`UIView`→`NSView` etc., `Sources/Lumen/Core/AppKitExtend.swift`) e reimplementa `UIButton`/`KSSlider`/`UILabel`/`UIAlertController` sobre AppKit; no tvOS, `UXSlider` é um `UIProgressView` fake sem interação (`Sources/Lumen/Core/UIKitExtend.swift`). Isso permite que `PlayerToolBar`/`VideoPlayerView` compilem com um só código para iOS/tvOS/macOS.
 - **Caminho SwiftUI** (`SwiftUI/`): `KSVideoPlayerView` é a UI completa e independente do caminho UIKit (`Sources/Lumen/SwiftUI/KSVideoPlayerView.swift`), construída sobre `KSVideoPlayer.Coordinator` (subsistema AVPlayer). Inclui controles, legendas, painel de settings e Live Text; no tvOS, os controles de transporte vêm da camada dedicada `SwiftUI/TVOS/`.
 - **Modelo de recurso**: `KSPlayerResource`/`KSPlayerResourceDefinition` (múltiplas qualidades + legendas + cover + Now Playing — `Sources/Lumen/Video/KSPlayerItem.swift`) é consumido apenas pelo caminho UIKit.
-- Utilitários genéricos usados por toda a lib (parse de M3U, `runOnMainThread`, conversões de cor/imagem, conformances `RawRepresentable` para `@AppStorage`) em `Sources/Lumen/Core/Utility.swift`.
+- Utilitários genéricos usados por toda a lib (parse de M3U, `runOnMainThread`, conversões de cor/imagem, conformances `RawRepresentable` para `@AppStorage`) espalhados pelos arquivos de `Sources/Lumen/Core/` — um por área, listados na tabela abaixo.
 
 O que **não** está aqui: máquina de estados e motores (subsistema AVPlayer, doc 02), parsing/modelo de legendas (`SubtitleModel` — subsistema Subtitle), decodificação (MEPlayer).
 
@@ -35,12 +35,12 @@ O que **não** está aqui: máquina de estados e motores (subsistema AVPlayer, d
 | `UILabel` (macOS) | `Core/AppKitExtend.swift` | `NSTextField` não-editável estilizado |
 | `UIAlertController`/`UIAlertAction` (macOS) | `Core/AppKitExtend.swift` | **Stubs vazios** — `present` não faz nada no macOS |
 | `UIApplication.isIdleTimerDisabled` (macOS) | `Core/AppKitExtend.swift` | Via `IOPMAssertionCreateWithName` (noDisplaySleep) |
-| `LayerContainerView` | `Core/Utility.swift` | `UIView` com `layerClass = CAGradientLayer` — usada nas máscaras top/bottom |
-| `runOnMainThread` | `Core/Utility.swift` | Executa inline se já na main; senão `Task { await MainActor.run }` (**assíncrono nesse caso**) |
-| Extensões `URL` (`isMovie/isAudio/isSubtitle/isPlaylist/parsePlaylist/download`) | `Core/Utility.swift` | Detecção de tipo e download de legendas/playlists |
-| `Scanner.parseM3U` | `Core/Utility.swift` | Parser de `#EXTINF`/`#EXTVLCOPT` → `(title, URL, extinf)` |
-| Conformances `RawRepresentable` (`TextAlignment`, `HorizontalAlignment`, `VerticalAlignment`, `Color`, `Array`, `Date`) | `Core/Utility.swift` | Permitem persistir configs de legenda em `@AppStorage` |
-| `CGImage.combine/make/data` | `Core/Utility.swift` | Composição de imagens de legenda bitmap |
+| `LayerContainerView` | `Core/LayerContainerView.swift` | `UIView` com `layerClass = CAGradientLayer` — usada nas máscaras top/bottom |
+| `runOnMainThread` | `Core/FoundationExtend.swift` | Executa inline se já na main; senão `Task { await MainActor.run }` (**assíncrono nesse caso**) |
+| Extensões `URL` (`isMovie/isAudio/isSubtitle/isPlaylist/parsePlaylist/download`) | `Core/MediaTypeExtend.swift` e `Core/URLDownload.swift` | Detecção de tipo e download de legendas/playlists |
+| `Scanner.parseM3U` | `Core/M3UPlaylistParser.swift` | Parser de `#EXTINF`/`#EXTVLCOPT` → `(title, URL, extinf)` |
+| Conformances `RawRepresentable` (`TextAlignment`, `HorizontalAlignment`, `VerticalAlignment`, `Color`, `Array`, `Date`) | `Core/SwiftUIExtend.swift` | Permitem persistir configs de legenda em `@AppStorage` |
+| `CGImage.combine/make/data` | `Core/CoreGraphicsExtend.swift` | Composição de imagens de legenda bitmap |
 
 ### Video/
 
@@ -171,7 +171,7 @@ Camada exclusiva do tvOS (todo o diretório sob `#if os(tvOS)`, com os tipos de 
 - **`VideoTimeShowView` entra/sai da hierarquia de propósito**: opacity 0 continuaria atualizando a view (comentário `SwiftUI/KSVideoPlayerView.swift`), e os `onAppear/onDisappear` são quem move o foco tvOS entre `.controller` e `.play`. Trocar por `.opacity` quebra foco e performance.
 - **Vazamentos conhecidos do `Coordinator`**: monitor de `NSEvent.addLocalMonitorForEvents` no macOS (comentário `SwiftUI/KSVideoPlayerView.swift`) e `keyboardShortcut` no simulador iOS (comentário `SwiftUI/KSVideoPlayerViewBuilder.swift`) impedem o release do `Coordinator`.
 - **Commit de seek atrasado no tvOS**: no caminho atual (`TVScrubberInput`), o seek só é aplicado no `select`/`playPause`, ao perder foco, ou por auto-commit ~1s após a última interação; `menu` cancela e restaura o tempo âncora. O `TVSlide` legado (`SwiftUI/Slider.swift`) tem comportamento análogo com 1,5s, mas não está mais no caminho do player.
-- **`runOnMainThread` fora da main é assíncrono** (`Core/Utility.swift`): usa `Task { await MainActor.run }`, sem garantia de ordem com outras tasks — não usar quando a ordem importa.
+- **`runOnMainThread` fora da main é assíncrono** (`Core/FoundationExtend.swift`): usa `Task { await MainActor.run }`, sem garantia de ordem com outras tasks — não usar quando a ordem importa.
 - **`PlayerToolBar.addArrangedSubview` força `isHidden = false`** (`Core/PlayerToolBar.swift`): esconder um botão antes de adicioná-lo não funciona; esconda depois.
 - **Concorrência**: o target compila com `StrictConcurrency` experimental (`Package.swift`); as views são `@MainActor` por herdarem de UIView/NSView, e os callbacks de `KSPlayerLayerDelegate` já chegam na main (protocolo `@MainActor`, `Sources/Lumen/AVPlayer/KSPlayerLayer.swift`). Helpers puros novos (parsing, structs de dados) devem ficar `nonisolated`.
 - **`KSPlayerResourceDefinition` é `Equatable/Hashable` só por `url`** (`Video/KSPlayerItem.swift`): duas definitions com mesma URL e `KSOptions` diferentes são "iguais" — cuidado ao usar em `Set`/diffing.
