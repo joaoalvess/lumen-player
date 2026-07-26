@@ -490,6 +490,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
         case .ignore:
             break
         case .abortPending:
+            preferredAudioTrackID = track.trackID
             abortPendingSourceSwitch()
         case .hotSwitch:
             preferredAudioTrackID = track.trackID
