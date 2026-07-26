@@ -53,7 +53,7 @@ Resumo do que existe hoje no fork, por área. "Parcial" significa que há infrae
 | Cache em memória para seek em janela curta | Camada 1 pronta: seek **para a frente** dentro da janela de packets já bufferizada é servido da RAM, sem `avformat_seek_file` (`KSOptions.isMemorySeekEnabled`, default ligado, doc 03). Falta a camada 2 — anel de retenção alinhado por keyframe para seek **para trás** |
 | Troca de vídeo com atraso zero | `switchSource` troca a fonte sem derrubar o player (doc 02), opt-in por `options.isSourceSwitchEnabled`. No `ProAVPlayer` a reprodução ainda rebobina pela latência do remux novo; não há prewarm especulativo de candidatos |
 | Metadados dinâmicos Dolby Vision no caminho MEPlayer | No `ProAVPlayer` o DV é nativo. No `KSMEPlayer`, DV passa como passthrough pelo displayLayer; RPU/metadata são lidos e **descartados** no `FFmpegDecode`; o shader `displayYCCTexture` (P5) existe e não é usado |
-| Metadados dinâmicos HDR10+ | HDR10 estático vira `CAEDRMetadata`; side data `DYNAMIC_HDR_PLUS` é lido e jogado fora |
+| Metadados dinâmicos HDR10+ | No `ProAVPlayer` o remux detecta ST 2094-40 (side data ou SEI de prefixo) antes de escrever a master e anuncia `SUPPLEMENTAL-CODECS="…/cdm4"` com a brand também no `ftyp` (doc 03) — **falta validar em hardware** que o tvOS aplica o tone mapping dinâmico. No `KSMEPlayer`, HDR10 estático vira `CAEDRMetadata` e o side data `DYNAMIC_HDR_PLUS` continua sendo lido e jogado fora |
 | De-interlace por hardware | `yadif_videotoolbox` só se configurado à mão; o auto-detect injeta `yadif` por software |
 | Janela pequena in-app retomável | PiP do sistema existe; janela pequena in-app retomável não |
 | PiP com legendas | PiP funciona, mas legendas são overlay de UI fora do layer do PiP |

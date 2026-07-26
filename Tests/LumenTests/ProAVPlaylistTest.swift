@@ -75,6 +75,38 @@ class ProAVPlaylistTest: XCTestCase {
         XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "ac-3", channels: nil))
     }
 
+    private func aacStrategy(profile: Int32) -> ProAVAudioStrategy {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_id = AV_CODEC_ID_AAC
+        codecpar.profile = profile
+        codecpar.ch_layout.nb_channels = 2
+        return ProAVAudioStrategy.make(codecpar: codecpar)
+    }
+
+    func testAACLowComplexityKeepsTheBaseCodecString() {
+        for profile in [AV_PROFILE_AAC_LOW, AV_PROFILE_AAC_MAIN, AV_PROFILE_AAC_LTP, AV_PROFILE_UNKNOWN] {
+            let strategy = aacStrategy(profile: profile)
+            XCTAssertTrue(strategy.copiesBitstream)
+            XCTAssertEqual(strategy.signaling, ProAVAudioSignaling(codecsAttribute: "mp4a.40.2", channels: "2"))
+        }
+    }
+
+    func testHighEfficiencyAACSignalsItsOwnObjectType() {
+        let heV1 = aacStrategy(profile: AV_PROFILE_AAC_HE)
+        XCTAssertTrue(heV1.copiesBitstream)
+        XCTAssertEqual(heV1.signaling, ProAVAudioSignaling(codecsAttribute: "mp4a.40.5", channels: "2"))
+        let heV2 = aacStrategy(profile: AV_PROFILE_AAC_HE_V2)
+        XCTAssertTrue(heV2.copiesBitstream)
+        XCTAssertEqual(heV2.signaling, ProAVAudioSignaling(codecsAttribute: "mp4a.40.29", channels: "2"))
+    }
+
+    func testAACCodecsAttributeMapsTheProfileTable() {
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_AAC_LOW), "mp4a.40.2")
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_AAC_HE), "mp4a.40.5")
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_AAC_HE_V2), "mp4a.40.29")
+        XCTAssertEqual(ProAVAudioStrategy.aacCodecsAttribute(profile: AV_PROFILE_UNKNOWN), "mp4a.40.2")
+    }
+
     func testUnsupportedCodecTranscodesToFLAC() {
         var codecpar = AVCodecParameters()
         codecpar.codec_id = AV_CODEC_ID_TRUEHD
@@ -149,6 +181,89 @@ class ProAVPlaylistTest: XCTestCase {
             }
             XCTAssertEqual(signaling.codecsAttribute, "dvh1.08.06")
             XCTAssertFalse(signaling.convertsDolbyVisionProfile7)
+        }
+    }
+
+    private func masterPlaylist(for signaling: ProAVVideoSignaling) -> String {
+        ProAVPlaylist.master(mediaPlaylistName: "media.m3u8", video: signaling, audio: nil, bandwidth: 24_000_000, resolution: CGSize(width: 3840, height: 2160), frameRate: 23.976)
+    }
+
+    func testProfile5TrackSignalsDolbyVisionPrimary() {
+        withHEVCTrack(doviRecord: [1, 0, 5, 6, 1, 0, 1, 0, 0]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false) else {
+                XCTFail("profile 5 signaling refused")
+                return
+            }
+            XCTAssertEqual(signaling.codecTag, "dvh1")
+            XCTAssertEqual(signaling.codecsAttribute, "dvh1.05.06")
+            XCTAssertEqual(signaling.videoRange, "PQ")
+            XCTAssertNil(signaling.supplementalCodecs)
+            XCTAssertEqual(signaling.preferredDynamicRange, .dolbyVision)
+            XCTAssertFalse(signaling.convertsDolbyVisionProfile7)
+            let master = masterPlaylist(for: signaling)
+            XCTAssertTrue(master.contains("CODECS=\"dvh1.05.06\""))
+            XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"))
+            XCTAssertFalse(master.contains("SUPPLEMENTAL-CODECS"))
+        }
+    }
+
+    func testProfile81TrackSignalsPQPrimary() {
+        withHEVCTrack(doviRecord: [1, 0, 8, 6, 1, 0, 1, 1, 0]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false) else {
+                XCTFail("profile 8.1 signaling refused")
+                return
+            }
+            XCTAssertEqual(signaling.codecTag, "dvh1")
+            XCTAssertEqual(signaling.videoRange, "PQ")
+            XCTAssertNil(signaling.supplementalCodecs)
+            XCTAssertEqual(signaling.preferredDynamicRange, .dolbyVision)
+            let master = masterPlaylist(for: signaling)
+            XCTAssertTrue(master.contains("CODECS=\"dvh1.08.06\""))
+            XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"))
+            XCTAssertFalse(master.contains("SUPPLEMENTAL-CODECS"))
+        }
+    }
+
+    func testProfile82TrackSignalsSDRBaseWithDb2g() {
+        withHEVCTrack(doviRecord: [1, 0, 8, 6, 1, 0, 1, 2, 0]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false) else {
+                XCTFail("profile 8.2 signaling refused")
+                return
+            }
+            XCTAssertEqual(signaling.codecTag, "hvc1")
+            XCTAssertEqual(signaling.codecsAttribute, "hvc1.2.4.L153.B0")
+            XCTAssertEqual(signaling.videoRange, "SDR")
+            XCTAssertEqual(signaling.supplementalCodecs, "dvh1.08.06/db2g")
+            XCTAssertEqual(signaling.preferredDynamicRange, .dolbyVision)
+            XCTAssertFalse(signaling.convertsDolbyVisionProfile7)
+            XCTAssertEqual(signaling.codecTagValue, 0x6876_6331)
+            let master = masterPlaylist(for: signaling)
+            XCTAssertTrue(master.contains("CODECS=\"hvc1.2.4.L153.B0\""))
+            XCTAssertTrue(master.contains("VIDEO-RANGE=SDR"))
+            XCTAssertTrue(master.contains("SUPPLEMENTAL-CODECS=\"dvh1.08.06/db2g\""))
+        }
+    }
+
+    func testProfile84TrackSignalsHLGWithDb4h() {
+        withHEVCTrack(doviRecord: [1, 0, 8, 6, 1, 0, 1, 4, 0]) { track in
+            guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false) else {
+                XCTFail("profile 8.4 signaling refused")
+                return
+            }
+            XCTAssertEqual(signaling.codecTag, "hvc1")
+            XCTAssertEqual(signaling.codecsAttribute, "hvc1.2.4.L153.B0")
+            XCTAssertEqual(signaling.videoRange, "HLG")
+            XCTAssertEqual(signaling.supplementalCodecs, "dvh1.08.06/db4h")
+            XCTAssertEqual(signaling.preferredDynamicRange, .dolbyVision)
+            let master = masterPlaylist(for: signaling)
+            XCTAssertTrue(master.contains("VIDEO-RANGE=HLG"))
+            XCTAssertTrue(master.contains("SUPPLEMENTAL-CODECS=\"dvh1.08.06/db4h\""))
+        }
+    }
+
+    func testUnsupportedDolbyVisionCompatibilityIsRefused() {
+        withHEVCTrack(doviRecord: [1, 0, 8, 6, 1, 0, 1, 3, 0]) { track in
+            XCTAssertNil(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: true))
         }
     }
 
@@ -235,6 +350,72 @@ class ProAVPlaylistTest: XCTestCase {
         }
         withH264Track(avcC: [1, 0x4D, 0x40, 0x1E, 0xFF, 0xE1], format: AV_PIX_FMT_NONE.rawValue) { track in
             XCTAssertEqual(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false)?.codecsAttribute, "avc1.4d401e")
+        }
+    }
+
+    func testDynamicHDR10PlusUpgradesHEVCPQSignaling() {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_type = AVMEDIA_TYPE_VIDEO
+        codecpar.codec_id = AV_CODEC_ID_HEVC
+        codecpar.level = 153
+        codecpar.color_trc = AVCOL_TRC_SMPTE2084
+        guard let track = FFmpegAssetTrack(codecpar: codecpar),
+              let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false)
+        else {
+            XCTFail("hdr10 hevc signaling refused")
+            return
+        }
+        let upgraded = signaling.addingDynamicHDR10Plus()
+        XCTAssertEqual(upgraded.codecTag, "hvc1")
+        XCTAssertEqual(upgraded.codecsAttribute, "hvc1.2.4.L153.B0")
+        XCTAssertEqual(upgraded.videoRange, "PQ")
+        XCTAssertEqual(upgraded.supplementalCodecs, "hvc1.2.4.L153.B0/cdm4")
+        XCTAssertEqual(upgraded.preferredDynamicRange, .hdr10)
+        let master = masterPlaylist(for: upgraded)
+        XCTAssertTrue(master.contains("SUPPLEMENTAL-CODECS=\"hvc1.2.4.L153.B0/cdm4\""))
+        XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"))
+        let untouched = ["#EXTM3U",
+                         "#EXT-X-VERSION:7",
+                         "#EXT-X-INDEPENDENT-SEGMENTS",
+                         "#EXT-X-STREAM-INF:BANDWIDTH=24000000,CODECS=\"hvc1.2.4.L153.B0\",RESOLUTION=3840x2160,FRAME-RATE=23.976,VIDEO-RANGE=PQ",
+                         "media.m3u8"].joined(separator: "\n") + "\n"
+        XCTAssertEqual(masterPlaylist(for: signaling), untouched)
+    }
+
+    func testDynamicHDR10PlusLeavesDolbyVisionSignalingAlone() {
+        for record in [[UInt8]([1, 0, 5, 6, 1, 0, 1, 0, 0]), [1, 0, 8, 6, 1, 0, 1, 1, 0], [1, 0, 8, 6, 1, 0, 1, 2, 0], [1, 0, 8, 6, 1, 0, 1, 4, 0]] {
+            withHEVCTrack(doviRecord: record) { track in
+                guard let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false) else {
+                    XCTFail("dolby vision signaling refused for \(record)")
+                    return
+                }
+                let upgraded = signaling.addingDynamicHDR10Plus()
+                XCTAssertEqual(upgraded.codecTag, signaling.codecTag)
+                XCTAssertEqual(upgraded.codecsAttribute, signaling.codecsAttribute)
+                XCTAssertEqual(upgraded.videoRange, signaling.videoRange)
+                XCTAssertEqual(upgraded.supplementalCodecs, signaling.supplementalCodecs)
+                XCTAssertEqual(masterPlaylist(for: upgraded), masterPlaylist(for: signaling))
+            }
+        }
+    }
+
+    func testDynamicHDR10PlusLeavesNonPQSignalingAlone() {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_type = AVMEDIA_TYPE_VIDEO
+        codecpar.codec_id = AV_CODEC_ID_HEVC
+        codecpar.level = 120
+        for transfer in [AVCOL_TRC_ARIB_STD_B67, AVCOL_TRC_BT709] {
+            codecpar.color_trc = transfer
+            guard let track = FFmpegAssetTrack(codecpar: codecpar),
+                  let signaling = ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false)
+            else {
+                XCTFail("hevc signaling refused")
+                return
+            }
+            XCTAssertNil(signaling.addingDynamicHDR10Plus().supplementalCodecs)
+        }
+        withH264Track(avcC: [1, 0x64, 0x00, 0x28, 0xFF, 0xE1]) { track in
+            XCTAssertNil(ProAVVideoSignaling(track: track, convertDolbyVisionProfile7: false)?.addingDynamicHDR10Plus().supplementalCodecs)
         }
     }
 
