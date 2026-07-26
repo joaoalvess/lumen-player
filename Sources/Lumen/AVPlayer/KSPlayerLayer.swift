@@ -171,19 +171,7 @@ open class KSPlayerLayer: NSObject {
         }
     }
 
-    private lazy var timer: Timer = .scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-        guard let self, self.player.isReadyToPlay else {
-            return
-        }
-        self.delegate?.player(layer: self, currentTime: self.player.currentPlaybackTime, totalTime: self.player.duration)
-        if self.player.playbackState == .playing, self.player.loadState == .playable, self.state == .buffering {
-            // 一个兜底保护，正常不能走到这里
-            self.state = .bufferFinished
-        }
-        if self.player.isPlaying {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.player.currentPlaybackTime
-        }
-    }
+    private var timer: Timer?
 
     private var urls = [URL]()
     private var isAutoPlay: Bool
@@ -239,7 +227,7 @@ open class KSPlayerLayer: NSObject {
     }
 
     deinit {
-        timer.invalidate()
+        timer?.invalidate()
         if #available(iOS 15.0, tvOS 15.0, macOS 12.0, *) {
             player.pipController?.contentSource = nil
         }
@@ -339,6 +327,25 @@ open class KSPlayerLayer: NSObject {
         }
     }
 
+    private func startTimer() {
+        if timer == nil {
+            timer = .scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                guard let self, self.player.isReadyToPlay else {
+                    return
+                }
+                self.delegate?.player(layer: self, currentTime: self.player.currentPlaybackTime, totalTime: self.player.duration)
+                if self.player.playbackState == .playing, self.player.loadState == .playable, self.state == .buffering {
+                    // 一个兜底保护，正常不能走到这里
+                    self.state = .bufferFinished
+                }
+                if self.player.isPlaying {
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.player.currentPlaybackTime
+                }
+            }
+        }
+        timer?.fireDate = Date.distantPast
+    }
+
     open func play() {
         runOnMainThread {
             UIApplication.shared.isIdleTimerDisabled = true
@@ -358,7 +365,7 @@ open class KSPlayerLayer: NSObject {
             } else {
                 player.play()
             }
-            timer.fireDate = Date.distantPast
+            startTimer()
         }
         state = player.loadState == .playable ? .bufferFinished : .buffering
         MPNowPlayingInfoCenter.default().playbackState = .playing
@@ -370,7 +377,7 @@ open class KSPlayerLayer: NSObject {
     open func pause() {
         isAutoPlay = false
         player.pause()
-        timer.fireDate = Date.distantFuture
+        timer?.fireDate = Date.distantFuture
         state = .paused
         MPNowPlayingInfoCenter.default().playbackState = .paused
         runOnMainThread {
@@ -522,7 +529,7 @@ extension KSPlayerLayer: MediaPlayerDelegate {
             }
             state = .playedToTheEnd
         }
-        timer.fireDate = Date.distantFuture
+        timer?.fireDate = Date.distantFuture
         bufferedCount = 1
         runOnMainThread { [weak self] in
             guard let self else { return }

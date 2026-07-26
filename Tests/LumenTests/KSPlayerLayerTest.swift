@@ -9,6 +9,7 @@ class KSPlayerLayerTest: XCTestCase {
         KSOptions.isAccurateSeek = true
     }
 
+    @MainActor
     func testPlayerLayer() {
         if let path = Bundle(for: type(of: self)).path(forResource: "h264", ofType: "MP4") {
             set(path: path)
@@ -24,30 +25,29 @@ class KSPlayerLayerTest: XCTestCase {
         }
     }
 
+    @MainActor
     func set(path: String) {
         let options = KSOptions()
         let playerLayer = KSPlayerLayer(url: URL(fileURLWithPath: path), options: options)
         playerLayer.delegate = self
         XCTAssertEqual(playerLayer.state, .preparing)
         readyToPlayExpectation = expectation(description: "openVideo")
-        waitForExpectations(timeout: 2) { _ in
-            XCTAssert(playerLayer.player.isReadyToPlay == true)
-            XCTAssertEqual(playerLayer.state, .readyToPlay)
-            playerLayer.play()
-            playerLayer.pause()
-            XCTAssertEqual(playerLayer.state, .paused)
-            let seekExpectation = self.expectation(description: "seek")
-            playerLayer.seek(time: 2, autoPlay: true) { _ in
-                seekExpectation.fulfill()
-            }
-            XCTAssertEqual(playerLayer.state, .buffering)
-            self.waitForExpectations(timeout: 1000) { _ in
-                playerLayer.finish(player: playerLayer.player, error: nil)
-                XCTAssertEqual(playerLayer.state, .playedToTheEnd)
-                playerLayer.stop()
-                XCTAssertEqual(playerLayer.state, .initialized)
-            }
+        waitForExpectations(timeout: 2)
+        XCTAssert(playerLayer.player.isReadyToPlay == true)
+        XCTAssertEqual(playerLayer.state, .readyToPlay)
+        playerLayer.play()
+        playerLayer.pause()
+        XCTAssertEqual(playerLayer.state, .paused)
+        let seekExpectation = expectation(description: "seek")
+        playerLayer.seek(time: 2, autoPlay: true) { _ in
+            seekExpectation.fulfill()
         }
+        XCTAssertEqual(playerLayer.state, .buffering)
+        waitForExpectations(timeout: 1000)
+        playerLayer.finish(player: playerLayer.player, error: nil)
+        XCTAssertEqual(playerLayer.state, .playedToTheEnd)
+        playerLayer.stop()
+        XCTAssertEqual(playerLayer.state, .initialized)
     }
 }
 

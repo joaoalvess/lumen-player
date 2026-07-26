@@ -25,12 +25,11 @@ class KSAVPlayerTest: XCTestCase {
         play.delegate = self
         play.prepareToPlay()
         readyToPlayExpectation = expectation(description: "openVideo")
-        waitForExpectations(timeout: 10) { _ in
-            if play.isReadyToPlay {
-                play.play()
-            }
-            play.shutdown()
+        waitForExpectations(timeout: 10)
+        if play.isReadyToPlay {
+            play.play()
         }
+        play.shutdown()
     }
 }
 
