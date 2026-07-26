@@ -1,3 +1,4 @@
+import CoreGraphics
 import Libavformat
 @testable import Lumen
 import XCTest
@@ -61,6 +62,16 @@ class ProAVRemuxSessionTest: XCTestCase {
         avio_flush(context)
         session.releaseIOContext()
         XCTAssertFalse(session.isFailed)
+        return session
+    }
+
+    private func makeWindowSession() -> ProAVRemuxSession? {
+        let configuration = ProAVRemuxSession.Configuration(directory: directory, targetSegmentDuration: 2, minimumSegmentsBeforeReady: 2)
+        let session = ProAVRemuxSession(configuration: configuration)
+        let signaling = ProAVVideoSignaling(codecTag: "hvc1", codecsAttribute: "hvc1.2.4.L120.B0", videoRange: "SDR", supplementalCodecs: nil, preferredDynamicRange: .sdr)
+        guard session.begin(signaling: signaling, audioSignaling: nil, bandwidth: 12_000_000, resolution: CGSize(width: 1920, height: 1080), frameRate: 23.976) else {
+            return nil
+        }
         return session
     }
 
@@ -129,5 +140,57 @@ class ProAVRemuxSessionTest: XCTestCase {
             return
         }
         XCTAssertFalse(master.contains("cdm4"))
+    }
+
+    func testClosedSegmentsDurationIsZeroBeforeTheFirstCut() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        XCTAssertEqual(session.closedSegmentsDuration, 0)
+        _ = session.shouldCutSegment(at: 0)
+        session.trackVideoTime(seconds: 1.5)
+        XCTAssertEqual(session.closedSegmentsDuration, 0)
+        session.finish(reachedEnd: false)
+    }
+
+    func testClosedSegmentsDurationSumsTheClosedSegments() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        _ = session.shouldCutSegment(at: 0)
+        session.closeSegment(nextStartTime: 2)
+        XCTAssertEqual(session.closedSegmentsDuration, 2, accuracy: 0.0001)
+        session.closeSegment(nextStartTime: 4.5)
+        XCTAssertEqual(session.closedSegmentsDuration, 4.5, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
+    }
+
+    func testPlaylistStartIsUnknownBeforeTheFirstVideoKeyframe() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        XCTAssertNil(session.playlistStartSeconds)
+        session.finish(reachedEnd: false)
+    }
+
+    func testPlaylistStartIsTheKeyframeTheRemuxLandedOn() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        _ = session.shouldCutSegment(at: 1792)
+        let start = try XCTUnwrap(session.playlistStartSeconds)
+        XCTAssertEqual(start, 1792, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
+    }
+
+    func testPlaylistStartDoesNotFollowTheOpenSegment() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        _ = session.shouldCutSegment(at: 1792)
+        session.closeSegment(nextStartTime: 1794)
+        session.closeSegment(nextStartTime: 1796)
+        let start = try XCTUnwrap(session.playlistStartSeconds)
+        XCTAssertEqual(start, 1792, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
+    }
+
+    func testOpenSegmentDoesNotCountTowardsTheWindow() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        _ = session.shouldCutSegment(at: 0)
+        session.closeSegment(nextStartTime: 2)
+        session.trackVideoTime(seconds: 3.9)
+        XCTAssertEqual(session.closedSegmentsDuration, 2, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
     }
 }

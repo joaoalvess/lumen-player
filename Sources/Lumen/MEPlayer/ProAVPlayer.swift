@@ -9,6 +9,18 @@ import UIKit
 import AppKit
 #endif
 
+enum ProAVSeekRoute: Equatable {
+    case inner(TimeInterval)
+    case restart
+}
+
+enum ProAVAudioSwitchAction: Equatable {
+    case ignore
+    case abortPending
+    case hotSwitch
+    case coldRestart
+}
+
 @MainActor
 public final class ProAVPlayer {
     public static var segmentDuration = TimeInterval(2)
@@ -30,6 +42,7 @@ public final class ProAVPlayer {
     private var delegateProxy: ProAVLaunchDelegateProxy?
     private var pendingSourceSwitch: PendingSourceSwitch?
     private var preferredAudioTrackID: Int32?
+    private var embeddedSubtitles = [ProAVEmbeddedSubtitleInfo]()
     private var reportedReady = false
     private var didFail = false
     public weak var delegate: MediaPlayerDelegate?
@@ -47,6 +60,7 @@ public final class ProAVPlayer {
         let url: URL
         let options: KSOptions
         let startOffset: TimeInterval
+        let audioTrackID: Int32?
         let completion: (Bool) -> Void
         var innerSwitchStarted = false
     }
@@ -151,6 +165,21 @@ public final class ProAVPlayer {
         #endif
     }
 
+    private func syncEmbeddedSubtitles(item: MEPlayerItem) {
+        for track in item.assetTracks where track.mediaType == .subtitle {
+            let identifier = String(track.trackID)
+            if let existing = embeddedSubtitles.first(where: { $0.subtitleID == identifier }) {
+                existing.bind(track: track)
+            } else {
+                embeddedSubtitles.append(ProAVEmbeddedSubtitleInfo(track: track))
+            }
+        }
+    }
+
+    private func detachEmbeddedSubtitles() {
+        embeddedSubtitles.forEach { $0.detach() }
+    }
+
     private func fail(error: NSError) {
         abortPendingSourceSwitch()
         guard !didFail else { return }
@@ -158,6 +187,7 @@ public final class ProAVPlayer {
         let seekCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
         seekCompletion?(false)
+        detachEmbeddedSubtitles()
         remuxItem?.delegate = nil
         innerPlayer.shutdown()
         remuxItem?.shutdown()
@@ -174,11 +204,66 @@ public final class ProAVPlayer {
         previousCompletion?(false)
         pendingSeekCompletion = completion
         didFail = false
+        detachEmbeddedSubtitles()
         remuxItem?.delegate = nil
         innerPlayer.shutdown()
         remuxItem?.shutdown()
         session?.requestCleanup()
         startRemux(at: time)
+    }
+
+    private var timelineOrigin: TimeInterval {
+        session?.playlistStartSeconds ?? startOffset
+    }
+
+    private var canSwitchSource: Bool {
+        !didFail && reportedReady && session != nil && serverBaseURL != nil
+    }
+
+    private func beginSourceSwitch(url: URL, options: KSOptions, audioTrackID: Int32?, completion: @escaping ((Bool) -> Void)) {
+        abortPendingSourceSwitch()
+        guard canSwitchSource else {
+            completion(false)
+            return
+        }
+        let time = currentPlaybackTime
+        let launch = makeLaunch(url: url, options: options, at: time, audioTrackID: audioTrackID)
+        pendingSourceSwitch = PendingSourceSwitch(launch: launch, url: url, options: options, startOffset: time, audioTrackID: audioTrackID, completion: completion)
+        launch.session.onReady = { [weak self, weak session = launch.session] _ in
+            runOnMainThread {
+                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
+                self.pendingSourceSwitchDidBecomeReady()
+            }
+        }
+        launch.session.onFailure = { [weak self, weak session = launch.session] _ in
+            runOnMainThread {
+                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
+                self.abortPendingSourceSwitch()
+            }
+        }
+        launch.item.prepareToPlay()
+    }
+
+    static func seekRoute(target: TimeInterval, startOffset: TimeInterval, closedSegmentsDuration: TimeInterval) -> ProAVSeekRoute {
+        guard closedSegmentsDuration > 0, target >= startOffset, target <= startOffset + closedSegmentsDuration else {
+            return .restart
+        }
+        return .inner(target - startOffset)
+    }
+
+    static func audioSwitchAction(target: Int32, activeTrackID: Int32?, preferredTrackID: Int32?, pendingTrackID: Int32?, canHotSwitch: Bool) -> ProAVAudioSwitchAction {
+        let currentTrackID = activeTrackID ?? preferredTrackID
+        if let pendingTrackID {
+            if pendingTrackID == target {
+                return .ignore
+            }
+            if currentTrackID == target {
+                return .abortPending
+            }
+        } else if currentTrackID == target {
+            return .ignore
+        }
+        return canHotSwitch ? .hotSwitch : .coldRestart
     }
 
     private func pendingSourceSwitchDidBecomeReady() {
@@ -189,7 +274,8 @@ public final class ProAVPlayer {
         }
         let masterURL = serverBaseURL.appendingPathComponent(pending.launch.directoryName).appendingPathComponent(ProAVRemuxSession.masterPlaylistName)
         pendingSourceSwitch?.innerSwitchStarted = true
-        innerPlayer.switchSource(url: masterURL, options: pending.options) { [weak self] success in
+        let candidateOrigin = pending.launch.session.playlistStartSeconds ?? pending.startOffset
+        innerPlayer.switchSource(url: masterURL, options: pending.options, resumeShift: timelineOrigin - candidateOrigin) { [weak self] success in
             runOnMainThread {
                 guard let self, self.pendingSourceSwitch?.launch.session === pending.launch.session else { return }
                 if success {
@@ -207,10 +293,12 @@ public final class ProAVPlayer {
         let previousSession = session
         let previousItem = remuxItem
         let previousDynamicRange = previousSession?.videoSignaling?.preferredDynamicRange
+        let sourceChanged = pending.url != url
         previousItem?.delegate = nil
+        detachEmbeddedSubtitles()
         url = pending.url
         options = pending.options
-        preferredAudioTrackID = nil
+        preferredAudioTrackID = pending.audioTrackID
         session = pending.launch.session
         remuxItem = pending.launch.item
         delegateProxy = pending.launch.proxy
@@ -225,6 +313,10 @@ public final class ProAVPlayer {
         }
         previousItem?.shutdown()
         previousSession?.requestCleanup()
+        if sourceChanged {
+            embeddedSubtitles.forEach { $0.reset() }
+        }
+        syncEmbeddedSubtitles(item: pending.launch.item)
         if session?.videoSignaling?.preferredDynamicRange != previousDynamicRange {
             applyDisplayCriteria()
         }
@@ -243,6 +335,11 @@ public final class ProAVPlayer {
         pending.completion(false)
     }
 
+    fileprivate func launchDidOpen(index: Int) {
+        guard index == activeLaunchIndex, let remuxItem else { return }
+        syncEmbeddedSubtitles(item: remuxItem)
+    }
+
     fileprivate func launchDidFail(index: Int, error: NSError?) {
         if let pending = pendingSourceSwitch, pending.launch.index == index {
             abortPendingSourceSwitch()
@@ -255,7 +352,7 @@ public final class ProAVPlayer {
 
 extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     public var view: UIView? { innerPlayer.view }
-    public var playableTime: TimeInterval { startOffset + innerPlayer.playableTime }
+    public var playableTime: TimeInterval { timelineOrigin + innerPlayer.playableTime }
     public var isReadyToPlay: Bool { innerPlayer.isReadyToPlay }
     public var playbackState: MediaPlaybackState { innerPlayer.playbackState }
     public var loadState: MediaLoadState { innerPlayer.loadState }
@@ -265,9 +362,9 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     public var fileSize: Double { remuxItem?.fileSize ?? innerPlayer.fileSize }
     public var naturalSize: CGSize { remuxItem?.naturalSize ?? innerPlayer.naturalSize }
     public var chapters: [Chapter] { remuxItem?.chapters ?? [] }
-    public var currentPlaybackTime: TimeInterval { startOffset + innerPlayer.currentPlaybackTime }
+    public var currentPlaybackTime: TimeInterval { timelineOrigin + innerPlayer.currentPlaybackTime }
     public var dynamicInfo: DynamicInfo? { remuxItem?.dynamicInfo }
-    public var subtitleDataSouce: SubtitleDataSouce? { nil }
+    public var subtitleDataSouce: SubtitleDataSouce? { self }
 
     public var isMuted: Bool {
         get { innerPlayer.isMuted }
@@ -317,6 +414,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
         didFail = false
         reportedReady = false
         preferredAudioTrackID = nil
+        embeddedSubtitles.removeAll()
         self.url = url
         self.options = options
     }
@@ -330,27 +428,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
-        abortPendingSourceSwitch()
-        guard !didFail, reportedReady, session != nil, serverBaseURL != nil else {
-            completion(false)
-            return
-        }
-        let time = currentPlaybackTime
-        let launch = makeLaunch(url: url, options: options, at: time, audioTrackID: nil)
-        pendingSourceSwitch = PendingSourceSwitch(launch: launch, url: url, options: options, startOffset: time, completion: completion)
-        launch.session.onReady = { [weak self, weak session = launch.session] _ in
-            runOnMainThread {
-                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
-                self.pendingSourceSwitchDidBecomeReady()
-            }
-        }
-        launch.session.onFailure = { [weak self, weak session = launch.session] _ in
-            runOnMainThread {
-                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
-                self.abortPendingSourceSwitch()
-            }
-        }
-        launch.item.prepareToPlay()
+        beginSourceSwitch(url: url, options: options, audioTrackID: nil, completion: completion)
     }
 
     public func cancelSourceSwitch() {
@@ -362,6 +440,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
         let seekCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
         seekCompletion?(false)
+        detachEmbeddedSubtitles()
         remuxItem?.delegate = nil
         innerPlayer.shutdown()
         remuxItem?.shutdown()
@@ -373,7 +452,15 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
-        restart(at: max(time, 0), completion: completion)
+        let target = max(time, 0)
+        if !didFail, innerPlayer.isReadyToPlay, let session,
+           case let .inner(innerTime) = ProAVPlayer.seekRoute(target: target, startOffset: timelineOrigin, closedSegmentsDuration: session.closedSegmentsDuration)
+        {
+            abortPendingSourceSwitch()
+            innerPlayer.seek(time: innerTime, completion: completion)
+            return
+        }
+        restart(at: target, completion: completion)
     }
 
     public func enterBackground() {
@@ -397,11 +484,25 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
 
     public func select(track: some MediaPlayerTrack) {
         guard track.mediaType == .audio else { return }
-        guard preferredAudioTrackID != track.trackID else { return }
-        preferredAudioTrackID = track.trackID
-        remuxItem?.assetTracks.filter { $0.mediaType == .audio }.forEach { $0.isEnabled = $0.trackID == track.trackID }
-        restart(at: currentPlaybackTime, completion: nil)
+        let activeTrackID = remuxItem?.assetTracks.first(where: { $0.mediaType == .audio && $0.isEnabled })?.trackID
+        let action = ProAVPlayer.audioSwitchAction(target: track.trackID, activeTrackID: activeTrackID, preferredTrackID: preferredAudioTrackID, pendingTrackID: pendingSourceSwitch?.audioTrackID, canHotSwitch: canSwitchSource)
+        switch action {
+        case .ignore:
+            break
+        case .abortPending:
+            abortPendingSourceSwitch()
+        case .hotSwitch:
+            preferredAudioTrackID = track.trackID
+            beginSourceSwitch(url: url, options: options, audioTrackID: track.trackID) { _ in }
+        case .coldRestart:
+            preferredAudioTrackID = track.trackID
+            restart(at: currentPlaybackTime, completion: nil)
+        }
     }
+}
+
+extension ProAVPlayer: @preconcurrency SubtitleDataSouce {
+    public var infos: [any SubtitleInfo] { embeddedSubtitles }
 }
 
 extension ProAVPlayer: MediaPlayerDelegate {
@@ -452,7 +553,12 @@ private final class ProAVLaunchDelegateProxy: MEPlayerDelegate {
 
     func sourceDidChange(loadingState _: LoadingState) {}
 
-    func sourceDidOpened() {}
+    func sourceDidOpened() {
+        let index = launch
+        runOnMainThread { [weak target] in
+            target?.launchDidOpen(index: index)
+        }
+    }
 
     func sourceDidFailed(error: NSError?) {
         let index = launch

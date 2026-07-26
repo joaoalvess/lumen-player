@@ -20,6 +20,9 @@ public final class ProAVRemuxSession: @unchecked Sendable {
 
     let configuration: Configuration
     private let lock = NSLock()
+    private let progressLock = NSLock()
+    private var _closedDuration = TimeInterval(0)
+    private var _playlistStartSeconds: Double?
     private var pendingEvents = [() -> Void]()
     private var _preferredAudioTrackID: Int32?
     private var _onReady: ((URL) -> Void)?
@@ -87,6 +90,18 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         withLock { _videoSignaling }
     }
 
+    var closedSegmentsDuration: TimeInterval {
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        return _closedDuration
+    }
+
+    var playlistStartSeconds: Double? {
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        return _playlistStartSeconds
+    }
+
     func begin(signaling: ProAVVideoSignaling, audioSignaling: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {
         withLock {
             _videoSignaling = signaling
@@ -138,7 +153,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     func shouldCutSegment(at seconds: Double) -> Bool {
         withLock {
             guard let segmentStart else {
-                self.segmentStart = seconds
+                beginTimelineLocked(at: seconds)
                 return false
             }
             return seconds - segmentStart >= configuration.targetSegmentDuration
@@ -160,7 +175,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     func closeSegment(nextStartTime: Double) {
         withLock {
             guard let start = segmentStart else {
-                segmentStart = nextStartTime
+                beginTimelineLocked(at: nextStartTime)
                 return
             }
             completeCurrentSegmentLocked(duration: max(nextStartTime - start, 0.02))
@@ -239,6 +254,13 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         try? FileManager.default.removeItem(at: configuration.directory)
     }
 
+    private func beginTimelineLocked(at seconds: Double) {
+        segmentStart = seconds
+        progressLock.lock()
+        _playlistStartSeconds = seconds
+        progressLock.unlock()
+    }
+
     private func segmentFileName(index: Int) -> String {
         "segment\(index).m4s"
     }
@@ -258,6 +280,9 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         currentHandle = nil
         segments.append(ProAVSegment(fileName: segmentFileName(index: segmentIndex), duration: duration))
         segmentIndex += 1
+        progressLock.lock()
+        _closedDuration += duration
+        progressLock.unlock()
     }
 
     private func writeMediaPlaylistLocked(ended: Bool) {

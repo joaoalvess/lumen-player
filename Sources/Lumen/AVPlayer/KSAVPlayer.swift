@@ -98,6 +98,7 @@ public class KSAVPlayer {
         let asset: AVURLAsset
         let loader: DiskCacheResourceLoader?
         let options: KSOptions
+        let resumeShift: TimeInterval
         let completion: (Bool) -> Void
         var statusObservation: NSKeyValueObservation?
         var timeout: DispatchWorkItem?
@@ -487,6 +488,10 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
+        switchSource(url: url, options: options, resumeShift: 0, completion: completion)
+    }
+
+    func switchSource(url: URL, options: KSOptions, resumeShift: TimeInterval, completion: @escaping ((Bool) -> Void)) {
         abandonPendingSourceSwitch()
         guard !options.isLoopPlay, playerLooper == nil, let currentItem = player.currentItem else {
             completion(false)
@@ -501,7 +506,7 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
             completion(false)
             return
         }
-        var pending = PendingSourceSwitch(item: candidate, asset: asset, loader: loader, options: options, completion: completion)
+        var pending = PendingSourceSwitch(item: candidate, asset: asset, loader: loader, options: options, resumeShift: resumeShift, completion: completion)
         let timeout = DispatchWorkItem { [weak self] in
             self?.abandonPendingSourceSwitch()
         }
@@ -550,7 +555,8 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
         pending.timeout?.cancel()
         let previousAsset = urlAsset
         let previousLoader = cacheResourceLoader
-        let resumeTime = player.currentTime()
+        let currentTime = player.currentTime()
+        let resumeTime = currentTime.isNumeric ? CMTime(seconds: currentTime.seconds + pending.resumeShift) : currentTime
         urlAsset = pending.asset
         cacheResourceLoader = pending.loader
         player.advanceToNextItem()
