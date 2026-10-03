@@ -849,6 +849,30 @@ class SourceSwitchTest: XCTestCase {
     }
 
     @MainActor
+    func testStaleFailedSeekIsNotUsedAsTheFallbackPosition() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        KSOptions.secondPlayerType = FallbackFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        layer.failedSeekFallbackWindow = 0
+        let primary = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        primary.isReadyToPlay = true
+        primary.completesSeekImmediately = false
+        layer.readyToPlay(player: primary)
+        layer.seek(time: 75, autoPlay: true) { _ in }
+
+        primary.completeSeek(success: false)
+        layer.finish(player: primary, error: NSError(domain: "test", code: 6))
+
+        let fallback = try XCTUnwrap(layer.player as? FallbackFakeEngine)
+        fallback.isReadyToPlay = true
+        fallback.loadState = .playable
+        layer.readyToPlay(player: fallback)
+
+        XCTAssertFalse(fallback.seekTimes.contains(75))
+    }
+
+    @MainActor
     func testEngineFallbackIgnoresTheLateCancellationOfTheFailingEngineSwitch() throws {
         KSOptions.firstPlayerType = SwitchableFakeEngine.self
         KSOptions.secondPlayerType = FallbackFakeEngine.self

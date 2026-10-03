@@ -87,6 +87,7 @@ open class KSPlayerLayer: NSObject {
         let time: TimeInterval
         let autoPlay: Bool
         var hasFailed = false
+        var failedAt: TimeInterval = 0
     }
 
     public weak var delegate: KSPlayerLayerDelegate?
@@ -207,6 +208,7 @@ open class KSPlayerLayer: NSObject {
     private var activeSeekCompletion: SeekCompletion?
     private var seekabilityGraceGeneration: Int?
     var seekabilityGracePeriod = TimeInterval(2)
+    var failedSeekFallbackWindow = TimeInterval(10)
     private var lastKnownPlaybackTime = TimeInterval(0)
     private var startTime: TimeInterval = 0
     private var sourceSwitchGeneration = 0
@@ -513,13 +515,20 @@ open class KSPlayerLayer: NSObject {
 
     private func updatePendingSeekIntent(autoPlay: Bool) {
         guard let intent = pendingSeekIntent else { return }
-        pendingSeekIntent = SeekIntent(generation: intent.generation, time: intent.time, autoPlay: autoPlay, hasFailed: intent.hasFailed)
+        pendingSeekIntent = SeekIntent(
+            generation: intent.generation,
+            time: intent.time,
+            autoPlay: autoPlay,
+            hasFailed: intent.hasFailed,
+            failedAt: intent.failedAt
+        )
     }
 
     private func abandonPendingSeekIntent(keepsFallbackTarget: Bool = false) {
         guard var intent = actionableSeekIntent else { return }
         if keepsFallbackTarget {
             intent.hasFailed = true
+            intent.failedAt = ProcessInfo.processInfo.systemUptime
             pendingSeekIntent = intent
         } else {
             pendingSeekIntent = nil
@@ -657,10 +666,14 @@ extension KSPlayerLayer: MediaPlayerDelegate {
         if let error {
             if type(of: player) != KSOptions.secondPlayerType, let secondPlayerType = KSOptions.secondPlayerType {
                 let currentTime = player.currentPlaybackTime
-                let fallbackTime = pendingSeekIntent?.time ?? (
+                let fallbackIntent = pendingSeekIntent.flatMap { intent in
+                    !intent.hasFailed || ProcessInfo.processInfo.systemUptime - intent.failedAt < failedSeekFallbackWindow
+                        ? intent : nil
+                }
+                let fallbackTime = fallbackIntent?.time ?? (
                     (currentTime.isFinite && currentTime > 0) ? currentTime : lastKnownPlaybackTime
                 )
-                let fallbackAutoPlay = pendingSeekIntent?.autoPlay ?? isAutoPlay
+                let fallbackAutoPlay = fallbackIntent?.autoPlay ?? isAutoPlay
                 seekGeneration &+= 1
                 pendingSeekIntent = SeekIntent(
                     generation: seekGeneration,
