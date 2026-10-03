@@ -218,10 +218,10 @@ struct TVPanelView: View {
     }
 
     private var continueWatchingPanel: some View {
-        Text("Em breve")
-            .font(.system(size: 34, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.72))
-            .frame(maxWidth: .infinity, minHeight: 188, alignment: .center)
+        TVUpNextPanelContent(features: config.tvFeatures) {
+            onDismiss()
+            config.playUpNextNow()
+        }
     }
 
     private var advancedPanel: some View {
@@ -247,6 +247,64 @@ struct TVPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 188, alignment: .topLeading)
+    }
+}
+
+@available(tvOS 16.0, *)
+private struct TVUpNextPanelContent: View {
+    @ObservedObject
+    var features: TVPlayerFeatures
+    let onPlay: () -> Void
+
+    var body: some View {
+        if let item = features.upNext?.item {
+            HStack(alignment: .center, spacing: 36) {
+                AsyncImage(url: item.artworkURL) { phase in
+                    if let image = phase.image {
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        ZStack {
+                            Color.white.opacity(0.08)
+                            Image(systemName: "play.rectangle")
+                                .font(.system(size: 40, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.35))
+                        }
+                    }
+                }
+                .frame(width: 392, height: 220)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Próximo")
+                        .font(.system(size: 25, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.62))
+                    Text(item.title)
+                        .font(.system(size: 34, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    if let subtitle = item.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 25, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 24)
+
+                Button(action: onPlay) {
+                    Label("Reproduzir agora", systemImage: "play.fill")
+                }
+                .buttonStyle(TVProminentButtonStyle())
+            }
+        } else {
+            Text("Nada a seguir")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(maxWidth: .infinity, minHeight: 188, alignment: .center)
+        }
     }
 }
 

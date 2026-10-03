@@ -40,6 +40,8 @@ struct TVControlsOverlayView: View {
     var subtitleModel: SubtitleModel
     @ObservedObject
     var timemodel: ControllerTimeModel
+    @ObservedObject
+    var features: TVPlayerFeatures
     let title: String
     let metadata: TVPlayerMetadata
     @Binding
@@ -154,6 +156,9 @@ struct TVControlsOverlayView: View {
                 if hasAudioTracks {
                     chipButton(kind: .audio, systemName: "waveform")
                 }
+                if features.sources != nil {
+                    chipButton(kind: .sources, systemName: "rectangle.stack")
+                }
                 if config.playerLayer?.player.pipController != nil {
                     pipChip
                 }
@@ -167,10 +172,21 @@ struct TVControlsOverlayView: View {
         } label: {
             Image(systemName: systemName)
         }
-        .accessibilityLabel(kind == .subtitles ? "Legendas" : "Áudio")
+        .accessibilityLabel(chipAccessibilityLabel(kind))
         .buttonStyle(TVChipButtonStyle(isOpen: mode.popoverKind == kind))
         .disabled(mode != .transport)
         .anchorPreference(key: TVChipAnchorKey.self, value: .bounds) { [kind: $0] }
+    }
+
+    private func chipAccessibilityLabel(_ kind: TVTrackPopoverKind) -> String {
+        switch kind {
+        case .subtitles:
+            return "Legendas"
+        case .audio:
+            return "Áudio"
+        case .sources:
+            return "Fontes"
+        }
     }
 
     private var pipChip: some View {
@@ -206,7 +222,12 @@ struct TVControlsOverlayView: View {
     }
 
     private var availableTabs: [TVPanelTab] {
-        [.info, .cast, .advanced]
+        var tabs: [TVPanelTab] = [.info, .cast]
+        if features.upNext != nil {
+            tabs.append(.continueWatching)
+        }
+        tabs.append(.advanced)
+        return tabs
     }
 
     private var scrim: some View {

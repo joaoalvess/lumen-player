@@ -79,6 +79,7 @@ public protocol MediaPlayerProtocol: MediaPlayback {
     var usesExternalPlaybackWhileExternalScreenIsActive: Bool { get set }
     var isExternalPlaybackActive: Bool { get }
     var playbackRate: Float { get set }
+    var supportsPlaybackRate: Bool { get }
     var playbackVolume: Float { get set }
     var contentMode: UIViewContentMode { get set }
     var subtitleDataSouce: SubtitleDataSouce? { get }
@@ -103,6 +104,10 @@ public protocol MediaPlayerProtocol: MediaPlayback {
 public extension MediaPlayerProtocol {
     var nominalFrameRate: Float {
         tracks(mediaType: .video).first { $0.isEnabled }?.nominalFrameRate ?? 0
+    }
+
+    var supportsPlaybackRate: Bool {
+        true
     }
 
     func switchSource(url _: URL, options _: KSOptions, completion: @escaping ((Bool) -> Void)) {

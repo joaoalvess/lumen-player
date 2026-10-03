@@ -296,6 +296,7 @@ open class SubtitleModel: ObservableObject {
     public private(set) var subtitleInfos = [any SubtitleInfo]()
     @Published
     public private(set) var parts = [SubtitlePart]()
+    @Published
     public var subtitleDelay = 0.0 // s
     public var url: URL? {
         didSet {

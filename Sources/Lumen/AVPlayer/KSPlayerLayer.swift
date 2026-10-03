@@ -215,6 +215,12 @@ open class KSPlayerLayer: NSObject {
     private var isCommittingSourceSwitch = false
     private var pendingSourceSwitchCompletions = [(Bool) -> Void]()
     public private(set) var pendingSourceSwitchURL: URL?
+    private nonisolated(unsafe) static weak var nowPlayingOwner: KSPlayerLayer?
+    private var hasHostNowPlaying = false
+    private var nowPlayingTitle: String?
+    private var nowPlayingSubtitle: String?
+    private var nowPlayingArtworkURL: URL?
+    private let nowPlayingArtworkLoader = NowPlayingArtworkLoader()
     public init(url: URL, isAutoPlay: Bool = KSOptions.isAutoPlay, options: KSOptions, delegate: KSPlayerLayerDelegate? = nil) {
         self.url = url
         self.options = options
@@ -264,7 +270,7 @@ open class KSPlayerLayer: NSObject {
             player.pipController?.contentSource = nil
         }
         NotificationCenter.default.removeObserver(self)
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        clearNowPlayingInfoIfOwned()
         MPRemoteCommandCenter.shared().playCommand.removeTarget(nil)
         MPRemoteCommandCenter.shared().pauseCommand.removeTarget(nil)
         MPRemoteCommandCenter.shared().togglePlayPauseCommand.removeTarget(nil)
@@ -443,9 +449,26 @@ open class KSPlayerLayer: NSObject {
         bufferedCount = 0
         player.playbackRate = 1
         player.playbackVolume = 1
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        clearNowPlayingInfoIfOwned()
+        runOnMainThread { [weak self] in
+            self?.nowPlayingArtworkLoader.cancel()
+        }
         runOnMainThread {
             UIApplication.shared.isIdleTimerDisabled = false
+        }
+    }
+
+    @MainActor
+    public func setNowPlaying(title: String?, subtitle: String?, artworkURL: URL?) {
+        hasHostNowPlaying = true
+        nowPlayingTitle = title
+        nowPlayingSubtitle = subtitle
+        if nowPlayingArtworkURL != artworkURL {
+            nowPlayingArtworkURL = artworkURL
+            nowPlayingArtworkLoader.cancel()
+        }
+        if player.isReadyToPlay {
+            updateNowPlayingInfo()
         }
     }
 
@@ -747,12 +770,15 @@ extension KSPlayerLayer {
         player.prepareToPlay()
     }
 
+    @MainActor
     private func updateNowPlayingInfo() {
+        KSPlayerLayer.nowPlayingOwner = self
         if MPNowPlayingInfoCenter.default().nowPlayingInfo == nil {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = [MPMediaItemPropertyPlaybackDuration: player.duration]
         } else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyPlaybackDuration] = player.duration
         }
+        applyHostNowPlayingInfo()
         if MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] == nil, let title = player.dynamicInfo?.metadata["title"] {
             MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] = title
         }
@@ -776,6 +802,48 @@ extension KSPlayerLayer {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyAvailableLanguageOptions] = langs
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyCurrentLanguageOptions] = current
+    }
+
+    @MainActor
+    private func applyHostNowPlayingInfo() {
+        guard hasHostNowPlaying else {
+            return
+        }
+        let center = MPNowPlayingInfoCenter.default()
+        if let nowPlayingTitle {
+            center.nowPlayingInfo?[MPMediaItemPropertyTitle] = nowPlayingTitle
+        }
+        if let nowPlayingSubtitle {
+            center.nowPlayingInfo?[MPMediaItemPropertyArtist] = nowPlayingSubtitle
+        }
+        guard let artworkURL = nowPlayingArtworkURL else {
+            center.nowPlayingInfo?[MPMediaItemPropertyArtwork] = nil
+            return
+        }
+        if let artwork = nowPlayingArtworkLoader.artwork(for: artworkURL) {
+            center.nowPlayingInfo?[MPMediaItemPropertyArtwork] = artwork
+            return
+        }
+        center.nowPlayingInfo?[MPMediaItemPropertyArtwork] = nil
+        nowPlayingArtworkLoader.load(artworkURL) { [weak self] artwork in
+            self?.applyNowPlayingArtwork(artwork, for: artworkURL)
+        }
+    }
+
+    @MainActor
+    private func applyNowPlayingArtwork(_ artwork: MPMediaItemArtwork, for artworkURL: URL) {
+        guard nowPlayingArtworkURL == artworkURL, KSPlayerLayer.nowPlayingOwner === self else {
+            return
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtwork] = artwork
+    }
+
+    private func clearNowPlayingInfoIfOwned() {
+        if let owner = KSPlayerLayer.nowPlayingOwner, owner !== self {
+            return
+        }
+        KSPlayerLayer.nowPlayingOwner = nil
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     private func nextPlayer() {
