@@ -22,9 +22,11 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     private let lock = NSLock()
     private let progressLock = NSLock()
     private var _closedDuration = TimeInterval(0)
+    private var _consumedSeconds = TimeInterval(0)
     private var _playlistStartSeconds: Double?
     private var pendingEvents = [() -> Void]()
     private var _preferredAudioTrackID: Int32?
+    private var _subtitlePreference = ProAVSubtitlePreference.automatic
     private var _onReady: ((URL) -> Void)?
     private var _onFailure: ((NSError) -> Void)?
     private var _videoSignaling: ProAVVideoSignaling?
@@ -68,6 +70,15 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         }
     }
 
+    var subtitlePreference: ProAVSubtitlePreference {
+        get {
+            withLock { _subtitlePreference }
+        }
+        set {
+            withLock { _subtitlePreference = newValue }
+        }
+    }
+
     var onReady: ((URL) -> Void)? {
         get {
             withLock { _onReady }
@@ -100,6 +111,19 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         progressLock.lock()
         defer { progressLock.unlock() }
         return _playlistStartSeconds
+    }
+
+    var remuxedSecondsAhead: TimeInterval {
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        return max(0, _closedDuration - _consumedSeconds)
+    }
+
+    func noteConsumed(seconds: TimeInterval) {
+        guard seconds.isFinite else { return }
+        progressLock.lock()
+        _consumedSeconds = max(0, seconds)
+        progressLock.unlock()
     }
 
     func begin(signaling: ProAVVideoSignaling, audioSignaling: ProAVAudioSignaling?, bandwidth: Int64, resolution: CGSize, frameRate: Float) -> Bool {

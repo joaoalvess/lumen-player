@@ -222,7 +222,8 @@ enum ProAVPlaylist {
         if audio != nil {
             attributes.append("AUDIO=\"main\"")
         }
-        var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
+        let playlistVersion = video.supplementalCodecs == nil ? 7 : 10
+        var lines = ["#EXTM3U", "#EXT-X-VERSION:\(playlistVersion)", "#EXT-X-INDEPENDENT-SEGMENTS"]
         if let audio {
             var mediaAttributes = ["TYPE=AUDIO", "GROUP-ID=\"main\"", "NAME=\"Original\"", "DEFAULT=YES", "AUTOSELECT=YES"]
             if let channels = audio.channels {

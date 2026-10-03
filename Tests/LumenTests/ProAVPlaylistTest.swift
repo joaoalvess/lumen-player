@@ -40,6 +40,7 @@ class ProAVPlaylistTest: XCTestCase {
 
     func testMasterWithoutAudio() {
         let master = makeMaster(audio: nil)
+        XCTAssertTrue(master.contains("#EXT-X-VERSION:7"))
         XCTAssertFalse(master.contains("#EXT-X-MEDIA"))
         XCTAssertFalse(master.contains("AUDIO="))
         XCTAssertFalse(master.contains("CHANNELS"))
@@ -241,6 +242,7 @@ class ProAVPlaylistTest: XCTestCase {
             XCTAssertTrue(master.contains("CODECS=\"hvc1.2.4.L153.B0\""))
             XCTAssertTrue(master.contains("VIDEO-RANGE=SDR"))
             XCTAssertTrue(master.contains("SUPPLEMENTAL-CODECS=\"dvh1.08.06/db2g\""))
+            XCTAssertTrue(master.contains("#EXT-X-VERSION:10"))
         }
     }
 
@@ -258,6 +260,7 @@ class ProAVPlaylistTest: XCTestCase {
             let master = masterPlaylist(for: signaling)
             XCTAssertTrue(master.contains("VIDEO-RANGE=HLG"))
             XCTAssertTrue(master.contains("SUPPLEMENTAL-CODECS=\"dvh1.08.06/db4h\""))
+            XCTAssertTrue(master.contains("#EXT-X-VERSION:10"))
         }
     }
 
@@ -374,6 +377,7 @@ class ProAVPlaylistTest: XCTestCase {
         let master = masterPlaylist(for: upgraded)
         XCTAssertTrue(master.contains("SUPPLEMENTAL-CODECS=\"hvc1.2.4.L153.B0/cdm4\""))
         XCTAssertTrue(master.contains("VIDEO-RANGE=PQ"))
+        XCTAssertTrue(master.contains("#EXT-X-VERSION:10"))
         let untouched = ["#EXTM3U",
                          "#EXT-X-VERSION:7",
                          "#EXT-X-INDEPENDENT-SEGMENTS",

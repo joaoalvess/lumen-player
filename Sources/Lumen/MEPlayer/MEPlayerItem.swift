@@ -11,6 +11,12 @@ import Libavcodec
 import Libavfilter
 import Libavformat
 
+enum ProAVRemuxBufferAction: Equatable {
+    case pause
+    case resume
+    case hold
+}
+
 public final class MEPlayerItem: Sendable {
     private static let memorySeekDrainTimeout = TimeInterval(0.5)
     private let url: URL
@@ -311,6 +317,9 @@ extension MEPlayerItem {
         guard let formatCtx else {
             error = NSError(errorCode: .formatOutputCreate)
             return
+        }
+        for track in assetTracks where track.mediaType == .subtitle && track.isImageSubtitle {
+            track.isEnabled = session.subtitlePreference.enablesImageTrack(trackID: track.trackID, defaultEnabled: track.isEnabled)
         }
         guard let videoAssetTrack = assetTracks.first(where: { $0.mediaType == .video && $0.isEnabled }),
               let signaling = ProAVVideoSignaling(track: videoAssetTrack, convertDolbyVisionProfile7: options.convertDolbyVisionProfile7)
@@ -1119,8 +1128,30 @@ extension MEPlayerItem: MediaPlayback {
 }
 
 extension MEPlayerItem: CodecCapacityDelegate {
+    static func remuxBufferAction(
+        secondsAhead: TimeInterval,
+        maxBufferDuration: TimeInterval
+    ) -> ProAVRemuxBufferAction {
+        if secondsAhead > maxBufferDuration {
+            return .pause
+        }
+        if secondsAhead < maxBufferDuration / 2 {
+            return .resume
+        }
+        return .hold
+    }
+
     func codecDidChangeCapacity() {
-        guard remuxSession == nil else {
+        if let remuxSession {
+            let secondsAhead = remuxSession.remuxedSecondsAhead
+            switch Self.remuxBufferAction(secondsAhead: secondsAhead, maxBufferDuration: options.maxBufferDuration) {
+            case .pause:
+                pause()
+            case .resume:
+                resume()
+            case .hold:
+                break
+            }
             return
         }
         let loadingState = options.playable(capacitys: videoAudioTracks, isFirst: isFirst, isSeek: isSeek)

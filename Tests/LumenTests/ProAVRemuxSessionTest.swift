@@ -193,4 +193,47 @@ class ProAVRemuxSessionTest: XCTestCase {
         XCTAssertEqual(session.closedSegmentsDuration, 2, accuracy: 0.0001)
         session.finish(reachedEnd: false)
     }
+
+    func testConsumedPositionUpdatesSecondsAhead() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        _ = session.shouldCutSegment(at: 0)
+        session.closeSegment(nextStartTime: 10)
+        XCTAssertEqual(session.remuxedSecondsAhead, 10, accuracy: 0.0001)
+
+        session.noteConsumed(seconds: 7)
+        XCTAssertEqual(session.remuxedSecondsAhead, 3, accuracy: 0.0001)
+
+        session.noteConsumed(seconds: 20)
+        XCTAssertEqual(session.remuxedSecondsAhead, 0, accuracy: 0.0001)
+
+        session.noteConsumed(seconds: -.infinity)
+        XCTAssertEqual(session.remuxedSecondsAhead, 0, accuracy: 0.0001)
+        session.finish(reachedEnd: false)
+    }
+
+    func testRemuxBufferActionKeepsHysteresis() {
+        XCTAssertEqual(MEPlayerItem.remuxBufferAction(secondsAhead: 31, maxBufferDuration: 30), .pause)
+        XCTAssertEqual(MEPlayerItem.remuxBufferAction(secondsAhead: 30, maxBufferDuration: 30), .hold)
+        XCTAssertEqual(MEPlayerItem.remuxBufferAction(secondsAhead: 15, maxBufferDuration: 30), .hold)
+        XCTAssertEqual(MEPlayerItem.remuxBufferAction(secondsAhead: 14.9, maxBufferDuration: 30), .resume)
+    }
+
+    func testForwardSeekMovesPausedRemuxIntoResumeRange() throws {
+        let session = try XCTUnwrap(makeWindowSession())
+        _ = session.shouldCutSegment(at: 0)
+        session.closeSegment(nextStartTime: 40)
+        XCTAssertEqual(
+            MEPlayerItem.remuxBufferAction(secondsAhead: session.remuxedSecondsAhead, maxBufferDuration: 30),
+            .pause
+        )
+
+        session.noteConsumed(seconds: 30)
+
+        XCTAssertEqual(session.remuxedSecondsAhead, 10, accuracy: 0.0001)
+        XCTAssertEqual(
+            MEPlayerItem.remuxBufferAction(secondsAhead: session.remuxedSecondsAhead, maxBufferDuration: 30),
+            .resume
+        )
+        session.finish(reachedEnd: false)
+    }
 }
