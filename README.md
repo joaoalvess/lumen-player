@@ -30,10 +30,16 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 - The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
 - On tvOS, frame rate and dynamic range are handed to the display through `AVDisplayCriteria` — so the TV can switch mode to match the content, when the viewer has Match Content enabled
 - Multichannel output on five interchangeable audio backends, swappable via `KSOptions.audioPlayerType`; `AudioRendererPlayer` is the one that enables system spatialization
+- The initial audio track follows `KSOptions.preferredAudioLanguages` on all three engines — on `KSAVPlayer`, among the item's own tracks; HLS alternate audio renditions are not considered. Language codes are normalized first, so `por`, `pt` and `pt-BR` all match the same track
 
 **Interface**
 - A full tvOS player UI — transport bar, info panels, track popover, content tabs
 - **Scrub previews** — live thumbnails while you seek, decoded on a dedicated engine
+- **Up Next** — a countdown card for the next item the host provides. It appears in the last `leadTime` seconds (30 by default) or from a host-supplied `startTime`, never before the halfway mark. Select plays it now, Menu dismisses it, and unless the viewer dismissed it, the next item starts on its own when playback ends
+- **Skip buttons** for intro, credits, recap and preview ranges supplied by the host as `TVSkipSegment` values — Select jumps to the end of the range, Menu dismisses it, and the credits button gives way to Up Next
+- **Sources** — when the host sets a `TVSourcesProvider`, the transport bar gains a chip whose popover loads alternative sources asynchronously, with loading, retry and empty states
+- **Playback speed** from 0.75× to 2× in the audio popover, and **subtitle delay** in 0.1 s and 0.5 s steps, up to ±30 s, in the subtitle popover
+- **Now Playing** on tvOS shows the title passed to `KSVideoPlayerView(title:)` — or the container's own title when none is given — plus the subtitle and artwork from `TVPlayerMetadata`; the artwork is downsampled to 600 px before it is published
 - Focus model built for the remote from the start, not adapted from touch
 - Picture in Picture — subtitles are a SwiftUI overlay, so they stay in the app window and don't follow the PiP layer
 
@@ -49,6 +55,7 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 - Embedded-font extraction — fansub releases render with their own fonts
 - Font scaling derived from the script's `PlayResY` instead of guessed
 - Text, image (SUP/PGS) and closed captions
+- With the FFmpeg and remux engines, the initial embedded subtitle follows `KSOptions.preferredSubtitleLanguages`, preferring a text track over an image track in the same language; in `KSVideoPlayerView`, `subtitlesEnabledByDefault = false` starts with subtitles off
 
 ## Three engines, one API
 
@@ -164,6 +171,29 @@ KSVideoPlayerView(coordinator: coordinator, url: url, options: options)
         )
     )
 ```
+
+On tvOS, the host also supplies what the player can't know on its own — the next episode, the ranges worth skipping, the viewer's languages — and hears back when playback ends or the viewer picks a track:
+
+```swift
+options.preferredAudioLanguages = ["pt", "en"]
+options.preferredSubtitleLanguages = ["pt"]
+
+coordinator.tvFeatures.upNext = TVUpNext(
+    item: TVUpNextItem(title: "Episode 5", subtitle: "S02E05"),
+    onPlayNext: { playNextEpisode() }
+)
+coordinator.tvFeatures.skipSegments = [
+    TVSkipSegment(range: 62...148, kind: .intro)
+]
+coordinator.onTrackSelection = { event in
+    rememberLanguage(event.languageCode, for: event.kind)
+}
+coordinator.onPlaybackEnded = { reason in
+    if case .completed = reason { dismiss() }
+}
+```
+
+`onTrackSelection` fires when the viewer picks a track in the tvOS track popover, never for the automatic initial pick, and `onPlaybackEnded` reports `.completed` only when Up Next didn't take over.
 
 ## Module map
 
