@@ -10,8 +10,51 @@ public typealias UIImage = NSImage
 import Combine
 import CoreGraphics
 
+enum KSAVSourceSwitchResult {
+    case committed
+    case failed(NSError?)
+    case timedOut
+    case cancelled
+
+    var isCommitted: Bool {
+        if case .committed = self {
+            return true
+        }
+        return false
+    }
+
+    var diagnosticDescription: String {
+        switch self {
+        case .committed:
+            return "committed"
+        case let .failed(error):
+            guard let error else { return "failed" }
+            return "failed error=\(error.domain)/\(error.code) \(error.localizedDescription)"
+        case .timedOut:
+            return "timed-out"
+        case .cancelled:
+            return "cancelled"
+        }
+    }
+}
+
+enum KSAVFrameHandoffAction: Equatable {
+    case wait
+    case revealFirstFrame
+    case revealOnTimeout
+}
+
+enum KSAVSourceOwnershipTransferAction: Equatable {
+    case commit
+    case retry
+    case timedOut
+    case cancelled
+}
+
 public final class KSAVPlayerView: UIView {
     public let player = AVQueuePlayer()
+    private let freezeFrameLayer = CALayer()
+
     override public init(frame: CGRect) {
         super.init(frame: frame)
         #if !canImport(UIKit)
@@ -19,6 +62,13 @@ public final class KSAVPlayerView: UIView {
         #endif
         playerLayer.player = player
         player.automaticallyWaitsToMinimizeStalling = false
+        freezeFrameLayer.isHidden = true
+        freezeFrameLayer.masksToBounds = true
+        #if canImport(UIKit)
+        layer.addSublayer(freezeFrameLayer)
+        #else
+        layer?.addSublayer(freezeFrameLayer)
+        #endif
     }
 
     @available(*, unavailable)
@@ -43,16 +93,42 @@ public final class KSAVPlayerView: UIView {
             switch newValue {
             case .scaleToFill:
                 playerLayer.videoGravity = .resize
+                freezeFrameLayer.contentsGravity = .resize
             case .scaleAspectFit:
                 playerLayer.videoGravity = .resizeAspect
+                freezeFrameLayer.contentsGravity = .resizeAspect
             case .scaleAspectFill:
                 playerLayer.videoGravity = .resizeAspectFill
+                freezeFrameLayer.contentsGravity = .resizeAspectFill
             case .center:
                 playerLayer.videoGravity = .resizeAspect
+                freezeFrameLayer.contentsGravity = .resizeAspect
             default:
                 break
             }
         }
+    }
+
+    #if canImport(UIKit)
+    override public func layoutSubviews() {
+        super.layoutSubviews()
+        freezeFrameLayer.frame = bounds
+    }
+    #else
+    override public func layout() {
+        super.layout()
+        freezeFrameLayer.frame = bounds
+    }
+    #endif
+
+    fileprivate func showFreezeFrame(_ image: CGImage) {
+        freezeFrameLayer.contents = image
+        freezeFrameLayer.isHidden = false
+    }
+
+    fileprivate func hideFreezeFrame() {
+        freezeFrameLayer.isHidden = true
+        freezeFrameLayer.contents = nil
     }
 
     #if canImport(UIKit)
@@ -92,20 +168,51 @@ public class KSAVPlayer {
     private var loopStatusObservation: NSKeyValueObservation?
     private var mediaPlayerTracks = [AVMediaPlayerTrack]()
     private let embedSubtitleDataSouce = AVSubtitleDataSouce()
-    private static let sourceSwitchTimeout = TimeInterval(10)
+    static var sourceSwitchTimeout = TimeInterval(10)
+    static var sourceOwnershipTransferTimeout = TimeInterval(1)
+    static var sourceOwnershipTransferRetryInterval = TimeInterval(1.0 / 60.0)
+    static var frameHandoffTimeout = TimeInterval(2)
+    static var restoreSeekTimeout = TimeInterval(2)
+    private static let framePollInterval = TimeInterval(1.0 / 30.0)
     private struct PendingSourceSwitch {
-        let item: AVPlayerItem
+        var item: AVPlayerItem
         let asset: AVURLAsset
         let loader: DiskCacheResourceLoader?
+        var prewarmingPlayer: AVPlayer?
         let options: KSOptions
         let resumeShift: TimeInterval
-        let completion: (Bool) -> Void
+        var videoOutput: AVPlayerItemVideoOutput
+        let diagnosticLabel: String
+        let startedAt: TimeInterval
+        let completion: (KSAVSourceSwitchResult) -> Void
         var statusObservation: NSKeyValueObservation?
         var timeout: DispatchWorkItem?
     }
 
+    private struct ActiveFrameHandoff {
+        let generation: Int
+        let item: AVPlayerItem
+        let videoOutput: AVPlayerItemVideoOutput
+        let diagnosticLabel: String
+        let startedAt: TimeInterval
+    }
+
+    private struct ActiveSourceOwnershipTransfer {
+        let generation: Int
+        let pending: PendingSourceSwitch
+        let currentItem: AVPlayerItem
+        let startedAt: TimeInterval
+        var attempts: Int
+    }
+
     private let sourceSwitchLock = NSLock()
     private var pendingSourceSwitch: PendingSourceSwitch?
+    private var activeSourceOwnershipTransfer: ActiveSourceOwnershipTransfer?
+    private var sourceOwnershipTransferGeneration = 0
+    private var currentVideoOutput: AVPlayerItemVideoOutput?
+    private var sourceCommitGeneration = 0
+    private var frameHandoffGeneration = 0
+    private var activeFrameHandoff: ActiveFrameHandoff?
     private var error: Error? {
         didSet {
             if let error {
@@ -250,18 +357,63 @@ public class KSAVPlayer {
         }
         return (AVURLAsset(url: url, options: options.avOptions), nil)
     }
+
+    private static func makeVideoOutput() -> AVPlayerItemVideoOutput {
+        AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
+    }
+
+    static func makeSourceSwitchPrewarmingPlayer(item: AVPlayerItem) -> AVPlayer {
+        let player = AVPlayer(playerItem: item)
+        player.automaticallyWaitsToMinimizeStalling = false
+        player.isMuted = true
+        return player
+    }
+
+    static func shouldHandlePlaybackNotification(item: AVPlayerItem?, currentItem: AVPlayerItem?) -> Bool {
+        guard let item, let currentItem else { return false }
+        return item === currentItem
+    }
+
+    static func sourceOwnershipTransferAction(
+        canInsert: Bool,
+        currentItemMatches: Bool,
+        generationMatches: Bool,
+        elapsed: TimeInterval,
+        timeout: TimeInterval
+    ) -> KSAVSourceOwnershipTransferAction {
+        guard generationMatches, currentItemMatches else { return .cancelled }
+        if canInsert {
+            return .commit
+        }
+        if elapsed >= timeout {
+            return .timedOut
+        }
+        return .retry
+    }
+
+    static func frameHandoffAction(hasFirstFrame: Bool, elapsed: TimeInterval, timeout: TimeInterval) -> KSAVFrameHandoffAction {
+        if hasFirstFrame {
+            return .revealFirstFrame
+        }
+        if elapsed >= timeout {
+            return .revealOnTimeout
+        }
+        return .wait
+    }
 }
 
 extension KSAVPlayer {
     public var player: AVQueuePlayer { playerView.player }
     public var playerLayer: AVPlayerLayer { playerView.playerLayer }
-    @objc private func moviePlayDidEnd(notification _: Notification) {
+    @objc private func moviePlayDidEnd(notification: Notification) {
+        guard Self.shouldHandlePlaybackNotification(item: notification.object as? AVPlayerItem, currentItem: player.currentItem) else { return }
         if !options.isLoopPlay {
             playbackState = .finished
         }
     }
 
     @objc private func playerItemFailedToPlayToEndTime(notification: Notification) {
+        guard Self.shouldHandlePlaybackNotification(item: notification.object as? AVPlayerItem, currentItem: player.currentItem) else { return }
         var playError: Error?
         if let userInfo = notification.userInfo {
             if let error = userInfo["error"] as? Error {
@@ -286,7 +438,7 @@ extension KSAVPlayer {
             }
             if let playableVideo {
                 naturalSize = playableVideo.naturalSize
-            } else {
+            } else if !mediaPlayerTracks.isEmpty {
                 error = NSError(errorCode: .videoTracksUnplayable)
                 return
             }
@@ -362,7 +514,17 @@ extension KSAVPlayer {
         bufferEmptyObservation?.invalidate()
         likelyToKeepUpObservation?.invalidate()
         bufferFullObservation?.invalidate()
-        guard let playerItem else { return }
+        guard let playerItem else {
+            currentVideoOutput = nil
+            return
+        }
+        if let existingOutput = playerItem.outputs.first(where: { $0 is AVPlayerItemVideoOutput }) as? AVPlayerItemVideoOutput {
+            currentVideoOutput = existingOutput
+        } else {
+            let videoOutput = Self.makeVideoOutput()
+            playerItem.add(videoOutput)
+            currentVideoOutput = videoOutput
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(moviePlayDidEnd), name: .AVPlayerItemDidPlayToEndTime, object: playerItem)
         NotificationCenter.default.addObserver(self, selector: #selector(playerItemFailedToPlayToEndTime), name: .AVPlayerItemFailedToPlayToEndTime, object: playerItem)
         statusObservation = playerItem.observe(\.status) { [weak self] item, _ in
@@ -469,7 +631,9 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
 
     public func shutdown() {
         KSLog("shutdown \(self)")
-        abandonPendingSourceSwitch()
+        abandonPendingSourceSwitch(result: .cancelled)
+        sourceCommitGeneration &+= 1
+        finishFrameHandoff(result: .cancelled, renderedFirstFrame: false)
         isReadyToPlay = false
         playbackState = .stopped
         loadState = .idle
@@ -488,42 +652,70 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func switchSource(url: URL, options: KSOptions, completion: @escaping ((Bool) -> Void)) {
-        switchSource(url: url, options: options, resumeShift: 0, completion: completion)
+        switchSourceDetailed(url: url, options: options, resumeShift: 0, diagnosticLabel: "source-switch") { result in
+            completion(result.isCommitted)
+        }
     }
 
-    func switchSource(url: URL, options: KSOptions, resumeShift: TimeInterval, completion: @escaping ((Bool) -> Void)) {
-        abandonPendingSourceSwitch()
+    func switchSourceDetailed(
+        url: URL,
+        options: KSOptions,
+        resumeShift: TimeInterval,
+        diagnosticLabel: String,
+        completion: @escaping ((KSAVSourceSwitchResult) -> Void)
+    ) {
+        abandonPendingSourceSwitch(result: .cancelled)
+        finishFrameHandoff(result: .committed, renderedFirstFrame: false)
         guard !options.isLoopPlay, playerLooper == nil, let currentItem = player.currentItem else {
-            completion(false)
+            completion(.failed(NSError(description: "AVPlayer source switch is unavailable")))
             return
         }
         let (asset, loader) = KSAVPlayer.makeAsset(url: url, options: options)
         let candidate = AVPlayerItem(asset: asset)
         candidate.preferredForwardBufferDuration = options.preferredForwardBufferDuration
+        let candidateVideoOutput = Self.makeVideoOutput()
+        candidate.add(candidateVideoOutput)
         guard player.canInsert(candidate, after: currentItem) else {
             asset.cancelLoading()
             loader?.close()
-            completion(false)
+            completion(.failed(NSError(description: "AVPlayer rejected the source-switch candidate")))
             return
         }
-        var pending = PendingSourceSwitch(item: candidate, asset: asset, loader: loader, options: options, resumeShift: resumeShift, completion: completion)
+        let prewarmingPlayer = Self.makeSourceSwitchPrewarmingPlayer(item: candidate)
+        let startedAt = CACurrentMediaTime()
+        KSLog("[\(diagnosticLabel)] av-item prewarm started position=\(currentPlaybackTime) playing=\(isPlaying)")
+        var pending = PendingSourceSwitch(
+            item: candidate,
+            asset: asset,
+            loader: loader,
+            prewarmingPlayer: prewarmingPlayer,
+            options: options,
+            resumeShift: resumeShift,
+            videoOutput: candidateVideoOutput,
+            diagnosticLabel: diagnosticLabel,
+            startedAt: startedAt,
+            completion: completion
+        )
         let timeout = DispatchWorkItem { [weak self] in
-            self?.abandonPendingSourceSwitch()
+            guard let self else { return }
+            let error = candidate.error.map { " error=\(($0 as NSError).domain)/\(($0 as NSError).code) \($0.localizedDescription)" } ?? ""
+            KSLog("[\(diagnosticLabel)] av-item prewarm timed out status=\(candidate.status.rawValue) elapsed=\(CACurrentMediaTime() - startedAt)\(error)")
+            self.abandonPendingSourceSwitch(result: .timedOut)
         }
         pending.timeout = timeout
         sourceSwitchLock.lock()
         pendingSourceSwitch = pending
         sourceSwitchLock.unlock()
-        player.insert(candidate, after: currentItem)
         DispatchQueue.main.asyncAfter(deadline: .now() + KSAVPlayer.sourceSwitchTimeout, execute: timeout)
         let statusObservation = candidate.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             let status = item.status
             runOnMainThread {
                 guard let self else { return }
                 if status == .readyToPlay {
+                    KSLog("[\(diagnosticLabel)] av-item prewarm ready elapsed=\(CACurrentMediaTime() - startedAt)")
                     self.commitPendingSourceSwitch()
                 } else if status == .failed {
-                    self.abandonPendingSourceSwitch()
+                    self.abandonPendingSourceSwitch(result: .failed(item.error.map { $0 as NSError }))
                 }
             }
         }
@@ -533,7 +725,7 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func cancelSourceSwitch() {
-        abandonPendingSourceSwitch()
+        abandonPendingSourceSwitch(result: .cancelled)
     }
 
     private func takePendingSourceSwitch() -> PendingSourceSwitch? {
@@ -545,43 +737,237 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     private func commitPendingSourceSwitch() {
-        guard let pending = takePendingSourceSwitch() else { return }
+        guard var pending = takePendingSourceSwitch() else { return }
         let candidateTracks = pending.item.tracks.map { AVMediaPlayerTrack(track: $0) }
-        guard candidateTracks.contains(where: { $0.mediaType == .video && $0.isPlayable }) else {
-            discardSourceSwitch(pending)
+        guard candidateTracks.isEmpty || candidateTracks.contains(where: { $0.mediaType == .video && $0.isPlayable }) else {
+            discardSourceSwitch(pending, result: .failed(NSError(description: "AVPlayer source-switch candidate has no playable video track")))
             return
         }
         pending.statusObservation?.invalidate()
         pending.timeout?.cancel()
+        guard let currentItem = player.currentItem else {
+            discardSourceSwitch(pending, result: .failed(NSError(description: "AVPlayer lost its current item before source-switch ownership transfer")))
+            return
+        }
+        pending.prewarmingPlayer?.replaceCurrentItem(with: nil)
+        pending.prewarmingPlayer = nil
+        let promotionItem = AVPlayerItem(asset: pending.asset)
+        promotionItem.preferredForwardBufferDuration = pending.options.preferredForwardBufferDuration
+        let promotionVideoOutput = Self.makeVideoOutput()
+        promotionItem.add(promotionVideoOutput)
+        pending.item = promotionItem
+        pending.videoOutput = promotionVideoOutput
+        sourceOwnershipTransferGeneration &+= 1
+        let generation = sourceOwnershipTransferGeneration
+        activeSourceOwnershipTransfer = ActiveSourceOwnershipTransfer(
+            generation: generation,
+            pending: pending,
+            currentItem: currentItem,
+            startedAt: CACurrentMediaTime(),
+            attempts: 0
+        )
+        KSLog("[\(pending.diagnosticLabel)] ownership release started promotion=fresh-item")
+        attemptSourceOwnershipTransfer(generation: generation)
+    }
+
+    private func attemptSourceOwnershipTransfer(generation: Int) {
+        guard var transfer = activeSourceOwnershipTransfer else { return }
+        transfer.attempts += 1
+        activeSourceOwnershipTransfer = transfer
+        let elapsed = CACurrentMediaTime() - transfer.startedAt
+        let generationMatches = transfer.generation == generation && sourceOwnershipTransferGeneration == generation
+        let currentItemMatches = player.currentItem === transfer.currentItem
+        let canInsert = currentItemMatches && player.canInsert(transfer.pending.item, after: transfer.currentItem)
+        let action = Self.sourceOwnershipTransferAction(
+            canInsert: canInsert,
+            currentItemMatches: currentItemMatches,
+            generationMatches: generationMatches,
+            elapsed: elapsed,
+            timeout: Self.sourceOwnershipTransferTimeout
+        )
+        switch action {
+        case .commit:
+            activeSourceOwnershipTransfer = nil
+            sourceOwnershipTransferGeneration &+= 1
+            KSLog("[\(transfer.pending.diagnosticLabel)] ownership release ready attempts=\(transfer.attempts) elapsed=\(elapsed)")
+            commitTransferredSourceSwitch(transfer.pending, after: transfer.currentItem)
+        case .retry:
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.sourceOwnershipTransferRetryInterval) { [weak self] in
+                self?.attemptSourceOwnershipTransfer(generation: generation)
+            }
+        case .timedOut:
+            activeSourceOwnershipTransfer = nil
+            sourceOwnershipTransferGeneration &+= 1
+            KSLog("[\(transfer.pending.diagnosticLabel)] ownership release timed out attempts=\(transfer.attempts) elapsed=\(elapsed)")
+            discardSourceSwitch(transfer.pending, result: .timedOut)
+        case .cancelled:
+            activeSourceOwnershipTransfer = nil
+            sourceOwnershipTransferGeneration &+= 1
+            KSLog("[\(transfer.pending.diagnosticLabel)] ownership release cancelled attempts=\(transfer.attempts) elapsed=\(elapsed)")
+            discardSourceSwitch(transfer.pending, result: .cancelled)
+        }
+    }
+
+    private func commitTransferredSourceSwitch(_ pending: PendingSourceSwitch, after currentItem: AVPlayerItem) {
         let previousAsset = urlAsset
         let previousLoader = cacheResourceLoader
         let currentTime = player.currentTime()
         let resumeTime = currentTime.isNumeric ? CMTime(seconds: currentTime.seconds + pending.resumeShift) : currentTime
+        sourceCommitGeneration &+= 1
+        let commitGeneration = sourceCommitGeneration
+        if let freezeFrame = captureCurrentFrame() {
+            playerView.showFreezeFrame(freezeFrame)
+        }
         urlAsset = pending.asset
         cacheResourceLoader = pending.loader
-        player.advanceToNextItem()
-        if resumeTime.isNumeric, resumeTime.seconds > 0 {
-            player.seek(to: resumeTime, toleranceBefore: .zero, toleranceAfter: .zero)
-        }
         options = pending.options
+        player.insert(pending.item, after: currentItem)
+        player.advanceToNextItem()
+        currentVideoOutput = pending.videoOutput
         updateStatus(item: pending.item)
         previousAsset.cancelLoading()
         previousLoader?.close()
-        pending.completion(true)
+        let restoreTimeout = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            KSLog("[\(pending.diagnosticLabel)] restore seek timed out target=\(resumeTime.seconds)")
+            self.finishSourceSwitchCommit(
+                pending: pending,
+                resumeTime: resumeTime,
+                generation: commitGeneration,
+                seekFinished: false
+            )
+        }
+        if resumeTime.isNumeric, resumeTime.seconds > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.restoreSeekTimeout, execute: restoreTimeout)
+            player.seek(to: resumeTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                runOnMainThread {
+                    restoreTimeout.cancel()
+                    self?.finishSourceSwitchCommit(
+                        pending: pending,
+                        resumeTime: resumeTime,
+                        generation: commitGeneration,
+                        seekFinished: finished
+                    )
+                }
+            }
+        } else {
+            finishSourceSwitchCommit(
+                pending: pending,
+                resumeTime: resumeTime,
+                generation: commitGeneration,
+                seekFinished: true
+            )
+        }
     }
 
-    func abandonPendingSourceSwitch() {
-        guard let pending = takePendingSourceSwitch() else { return }
-        discardSourceSwitch(pending)
+    private func finishSourceSwitchCommit(
+        pending: PendingSourceSwitch,
+        resumeTime: CMTime,
+        generation: Int,
+        seekFinished: Bool
+    ) {
+        guard sourceCommitGeneration == generation else { return }
+        sourceCommitGeneration &+= 1
+        if playbackState == .playing {
+            playOrPause()
+        } else {
+            player.pause()
+        }
+        KSLog("[\(pending.diagnosticLabel)] restore seek finished=\(seekFinished) target=\(resumeTime.seconds) elapsed=\(CACurrentMediaTime() - pending.startedAt)")
+        beginFrameHandoff(pending: pending)
+        pending.completion(.committed)
     }
 
-    private func discardSourceSwitch(_ pending: PendingSourceSwitch) {
+    func abandonPendingSourceSwitch(result: KSAVSourceSwitchResult = .cancelled) {
+        if let pending = takePendingSourceSwitch() {
+            discardSourceSwitch(pending, result: result)
+        }
+        abandonActiveSourceOwnershipTransfer(result: result)
+    }
+
+    private func abandonActiveSourceOwnershipTransfer(result: KSAVSourceSwitchResult) {
+        guard let transfer = activeSourceOwnershipTransfer else { return }
+        activeSourceOwnershipTransfer = nil
+        sourceOwnershipTransferGeneration &+= 1
+        KSLog("[\(transfer.pending.diagnosticLabel)] ownership release cancelled attempts=\(transfer.attempts) elapsed=\(CACurrentMediaTime() - transfer.startedAt)")
+        discardSourceSwitch(transfer.pending, result: result)
+    }
+
+    private func discardSourceSwitch(_ pending: PendingSourceSwitch, result: KSAVSourceSwitchResult) {
         pending.statusObservation?.invalidate()
         pending.timeout?.cancel()
-        player.remove(pending.item)
+        pending.prewarmingPlayer?.replaceCurrentItem(with: nil)
+        if player.items().contains(where: { $0 === pending.item }) {
+            player.remove(pending.item)
+        }
         pending.asset.cancelLoading()
         pending.loader?.close()
-        pending.completion(false)
+        KSLog("[\(pending.diagnosticLabel)] av-item finished result=\(result.diagnosticDescription) elapsed=\(CACurrentMediaTime() - pending.startedAt)")
+        pending.completion(result)
+    }
+
+    private func captureCurrentFrame() -> CGImage? {
+        guard let currentVideoOutput else { return nil }
+        let hostTime = CACurrentMediaTime()
+        let outputTime = currentVideoOutput.itemTime(forHostTime: hostTime)
+        if let pixelBuffer = currentVideoOutput.copyPixelBuffer(forItemTime: outputTime, itemTimeForDisplay: nil),
+           let image = pixelBuffer.cgImage()
+        {
+            return image
+        }
+        guard let currentTime = player.currentItem?.currentTime(), currentTime.isNumeric,
+              let pixelBuffer = currentVideoOutput.copyPixelBuffer(forItemTime: currentTime, itemTimeForDisplay: nil)
+        else {
+            return nil
+        }
+        return pixelBuffer.cgImage()
+    }
+
+    private func beginFrameHandoff(pending: PendingSourceSwitch) {
+        frameHandoffGeneration &+= 1
+        let generation = frameHandoffGeneration
+        activeFrameHandoff = ActiveFrameHandoff(
+            generation: generation,
+            item: pending.item,
+            videoOutput: pending.videoOutput,
+            diagnosticLabel: pending.diagnosticLabel,
+            startedAt: CACurrentMediaTime()
+        )
+        pollFrameHandoff(generation: generation)
+    }
+
+    private func pollFrameHandoff(generation: Int) {
+        guard let handoff = activeFrameHandoff,
+              handoff.generation == generation,
+              player.currentItem === handoff.item
+        else {
+            return
+        }
+        let itemTime = handoff.videoOutput.itemTime(forHostTime: CACurrentMediaTime())
+        let hasFirstFrame = handoff.videoOutput.hasNewPixelBuffer(forItemTime: itemTime)
+        let elapsed = CACurrentMediaTime() - handoff.startedAt
+        switch Self.frameHandoffAction(hasFirstFrame: hasFirstFrame, elapsed: elapsed, timeout: Self.frameHandoffTimeout) {
+        case .wait:
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.framePollInterval) { [weak self] in
+                self?.pollFrameHandoff(generation: generation)
+            }
+        case .revealFirstFrame:
+            _ = handoff.videoOutput.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil)
+            finishFrameHandoff(result: .committed, renderedFirstFrame: true)
+        case .revealOnTimeout:
+            finishFrameHandoff(result: .committed, renderedFirstFrame: false)
+        }
+    }
+
+    private func finishFrameHandoff(result: KSAVSourceSwitchResult, renderedFirstFrame: Bool) {
+        guard let handoff = activeFrameHandoff else {
+            playerView.hideFreezeFrame()
+            return
+        }
+        activeFrameHandoff = nil
+        frameHandoffGeneration &+= 1
+        playerView.hideFreezeFrame()
+        KSLog("[\(handoff.diagnosticLabel)] first-frame rendered=\(renderedFirstFrame) result=\(result.diagnosticDescription) elapsed=\(CACurrentMediaTime() - handoff.startedAt)")
     }
 
     public var contentMode: UIViewContentMode {
