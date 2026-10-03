@@ -1,6 +1,7 @@
 import AVFoundation
 import FFmpegKit
 import Libavcodec
+import Libavformat
 @testable import Lumen
 import XCTest
 
@@ -19,6 +20,25 @@ class ProAVEmbeddedSubtitleTest: XCTestCase {
         var codecpar = AVCodecParameters()
         codecpar.codec_type = AVMEDIA_TYPE_SUBTITLE
         return FFmpegAssetTrack(codecpar: codecpar)
+    }
+
+    private func makeImageSubtitleTrack() -> FFmpegAssetTrack? {
+        var codecpar = AVCodecParameters()
+        codecpar.codec_type = AVMEDIA_TYPE_SUBTITLE
+        codecpar.codec_id = AV_CODEC_ID_HDMV_PGS_SUBTITLE
+        return FFmpegAssetTrack(codecpar: codecpar)
+    }
+
+    private func makeSubtitleTracks(count: Int) throws -> (context: UnsafeMutablePointer<AVFormatContext>, tracks: [FFmpegAssetTrack]) {
+        let context = try XCTUnwrap(avformat_alloc_context())
+        var tracks = [FFmpegAssetTrack]()
+        for _ in 0 ..< count {
+            let stream = try XCTUnwrap(avformat_new_stream(context, nil))
+            stream.pointee.codecpar.pointee.codec_type = AVMEDIA_TYPE_SUBTITLE
+            stream.pointee.codecpar.pointee.codec_id = AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            tracks.append(try XCTUnwrap(FFmpegAssetTrack(stream: stream)))
+        }
+        return (context, tracks)
     }
 
     private func makeQueue() -> SyncPlayerItemTrack<SubtitleFrame> {
@@ -171,5 +191,52 @@ class ProAVEmbeddedSubtitleTest: XCTestCase {
         XCTAssertEqual(texts(info.search(for: 1.5)), ["a"])
         info.reset()
         XCTAssertTrue(info.search(for: 1.5).isEmpty)
+    }
+
+    func testBitmapProxyRequestsAHotSwitchOnlyWhenItsSelectionChanges() throws {
+        let track = try XCTUnwrap(makeImageSubtitleTrack())
+        var events = [(Int32, Bool)]()
+        let info = ProAVEmbeddedSubtitleInfo(track: track) { events.append(($0, $1)) }
+
+        info.isEnabled = true
+        info.isEnabled = true
+        info.isEnabled = false
+
+        XCTAssertEqual(events.map(\.0), [track.trackID, track.trackID])
+        XCTAssertEqual(events.map(\.1), [true, false])
+    }
+
+    func testTextProxyDoesNotRequestARemux() throws {
+        let track = try XCTUnwrap(makeSubtitleTrack())
+        var events = [(Int32, Bool)]()
+        let info = ProAVEmbeddedSubtitleInfo(track: track) { events.append(($0, $1)) }
+
+        info.isEnabled = true
+        info.isEnabled = false
+
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func testBitmapPreferenceSelectsExactlyTheRequestedTrack() {
+        XCTAssertTrue(ProAVSubtitlePreference.automatic.enablesImageTrack(trackID: 1, defaultEnabled: true))
+        XCTAssertFalse(ProAVSubtitlePreference.automatic.enablesImageTrack(trackID: 1, defaultEnabled: false))
+        XCTAssertFalse(ProAVSubtitlePreference.disabled.enablesImageTrack(trackID: 1, defaultEnabled: true))
+        XCTAssertTrue(ProAVSubtitlePreference.track(2).enablesImageTrack(trackID: 2, defaultEnabled: false))
+        XCTAssertFalse(ProAVSubtitlePreference.track(2).enablesImageTrack(trackID: 1, defaultEnabled: true))
+    }
+
+    func testReconcileUsesNewTrackOrderAndRemovesMissingProxies() throws {
+        let firstSource = try makeSubtitleTracks(count: 2)
+        defer { avformat_free_context(firstSource.context) }
+        let existing = firstSource.tracks.map { ProAVEmbeddedSubtitleInfo(track: $0) }
+
+        let secondSource = try makeSubtitleTracks(count: 3)
+        defer { avformat_free_context(secondSource.context) }
+        let reconciled = ProAVEmbeddedSubtitleInfo.reconcile(existing: existing, tracks: Array(secondSource.tracks[1 ... 2]), preserveSelection: true) { _, _ in }
+
+        XCTAssertEqual(reconciled.map(\.trackID), [1, 2])
+        XCTAssertTrue(reconciled[0] === existing[1])
+        XCTAssertFalse(reconciled[1] === existing[0])
+        XCTAssertFalse(existing[0].isAttached)
     }
 }

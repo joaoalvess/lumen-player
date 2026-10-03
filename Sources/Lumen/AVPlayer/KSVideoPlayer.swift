@@ -16,6 +16,22 @@ import AppKit
 public typealias UIViewRepresentable = NSViewRepresentable
 #endif
 
+enum AudioTrackSelectionState: Equatable {
+    case idle
+    case switching(trackID: Int32)
+
+    var pendingTrackID: Int32? {
+        if case let .switching(trackID) = self {
+            return trackID
+        }
+        return nil
+    }
+
+    var isSwitching: Bool {
+        pendingTrackID != nil
+    }
+}
+
 public struct KSVideoPlayer {
     public private(set) var coordinator: Coordinator
     public let url: URL
@@ -86,6 +102,9 @@ extension KSVideoPlayer: UIViewRepresentable {
         public private(set) var isSeeking = false
 
         @Published
+        private(set) var audioTrackSelectionState = AudioTrackSelectionState.idle
+
+        @Published
         public var isMuted: Bool = false {
             didSet {
                 playerLayer?.player.isMuted = isMuted
@@ -131,13 +150,19 @@ extension KSVideoPlayer: UIViewRepresentable {
         // 在SplitView模式下，第二次进入会先调用makeUIView。然后在调用之前的dismantleUIView.所以如果进入的是同一个View的话，就会导致playerLayer被清空了。最准确的方式是在onDisappear清空playerLayer
         public var playerLayer: KSPlayerLayer? {
             didSet {
+                audioSelectionGeneration &+= 1
+                if audioTrackSelectionState != .idle {
+                    audioTrackSelectionState = .idle
+                }
                 oldValue?.delegate = nil
-                oldValue?.pause()
+                oldValue?.stop()
             }
         }
 
         private var lastPlayURL: URL?
         private var lastPlayTime = TimeInterval(0)
+        private var seekGeneration = 0
+        private var audioSelectionGeneration = 0
         private var delayHide: DispatchWorkItem?
         private var isMaskPinned = false
         public var onPlay: ((TimeInterval, TimeInterval) -> Void)?
@@ -165,6 +190,27 @@ extension KSVideoPlayer: UIViewRepresentable {
         #endif
 
         public init() {}
+
+        private func registerEmbeddedSubtitles(
+            from layer: KSPlayerLayer,
+            expectedURL: URL
+        ) {
+            guard let subtitleDataSouce = layer.player.subtitleDataSouce else { return }
+            // Some embedded tracks arrive after readyToPlay, so keep the existing delay.
+            DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 1) { [weak self, weak layer, weak subtitleDataSouce] in
+                guard let self, let layer, let subtitleDataSouce,
+                      self.playerLayer === layer,
+                      layer.url == expectedURL,
+                      layer.player.subtitleDataSouce === subtitleDataSouce
+                else {
+                    return
+                }
+                subtitleDataSouce.infos.forEach { self.subtitleModel.addSubtitle(info: $0) }
+                if self.subtitleModel.selectedSubtitleInfo == nil, layer.options.autoSelectEmbedSubtitle {
+                    self.subtitleModel.selectedSubtitleInfo = subtitleDataSouce.infos.first { $0.isEnabled }
+                }
+            }
+        }
 
         public func makeView(url: URL, options: KSOptions) -> UIView {
             defer {
@@ -201,13 +247,22 @@ extension KSVideoPlayer: UIViewRepresentable {
                 _ = makeView(url: url, options: options)
                 return
             }
-            playerLayer.switchSource(url: url, options: options) { [weak self] _ in
+            playerLayer.switchSource(url: url, options: options) { [weak self, weak playerLayer] success in
                 Task { @MainActor [weak self] in
-                    guard let self, self.playerLayer?.url == url else { return }
+                    guard let self,
+                          let playerLayer,
+                          self.playerLayer === playerLayer,
+                          playerLayer.url == url
+                    else {
+                        return
+                    }
                     #if os(tvOS)
                     self.scrubThumbnails.shutdown()
                     #endif
                     self.subtitleModel.url = url
+                    if success {
+                        self.registerEmbeddedSubtitles(from: playerLayer, expectedURL: url)
+                    }
                 }
             }
         }
@@ -249,10 +304,44 @@ extension KSVideoPlayer: UIViewRepresentable {
 
         public func seek(time: TimeInterval, autoPlay: Bool? = nil) {
             guard let playerLayer else { return }
+            seekGeneration &+= 1
+            let generation = seekGeneration
             isSeeking = true
             playerLayer.seek(time: time, autoPlay: autoPlay ?? playerLayer.options.isSeekedAutoPlay) { [weak self] _ in
                 Task { @MainActor in
-                    self?.isSeeking = false
+                    guard let self, self.seekGeneration == generation else { return }
+                    self.isSeeking = false
+                }
+            }
+        }
+
+        func selectAudioTrack(_ track: MediaPlayerTrack) {
+            guard track.mediaType == .audio,
+                  !audioTrackSelectionState.isSwitching,
+                  let playerLayer
+            else {
+                return
+            }
+            let player = playerLayer.player
+            guard !track.isEnabled else { return }
+            audioSelectionGeneration &+= 1
+            let generation = audioSelectionGeneration
+            audioTrackSelectionState = .switching(trackID: track.trackID)
+            guard let asyncPlayer = player as? AsyncAudioTrackSelecting else {
+                player.select(track: track)
+                audioTrackSelectionState = .idle
+                return
+            }
+            asyncPlayer.selectAudioTrack(trackID: track.trackID) { [weak self, weak playerLayer] _ in
+                Task { @MainActor [weak self, weak playerLayer] in
+                    guard let self,
+                          let playerLayer,
+                          self.playerLayer === playerLayer,
+                          self.audioSelectionGeneration == generation
+                    else {
+                        return
+                    }
+                    self.audioTrackSelectionState = .idle
                 }
             }
         }
@@ -302,16 +391,7 @@ extension KSVideoPlayer.Coordinator: KSPlayerLayerDelegate {
         onStateChanged?(layer, state)
         if state == .readyToPlay {
             playbackRate = layer.player.playbackRate
-            if let subtitleDataSouce = layer.player.subtitleDataSouce {
-                // 要延后增加内嵌字幕。因为有些内嵌字幕是放在视频流的。所以会比readyToPlay回调晚。
-                DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 1) { [weak self] in
-                    guard let self else { return }
-                    self.subtitleModel.addSubtitle(dataSouce: subtitleDataSouce)
-                    if self.subtitleModel.selectedSubtitleInfo == nil, layer.options.autoSelectEmbedSubtitle {
-                        self.subtitleModel.selectedSubtitleInfo = subtitleDataSouce.infos.first { $0.isEnabled }
-                    }
-                }
-            }
+            registerEmbeddedSubtitles(from: layer, expectedURL: layer.url)
         } else if state == .bufferFinished {
             if !isMaskPinned {
                 isMaskShow = false

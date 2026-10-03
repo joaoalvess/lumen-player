@@ -14,6 +14,21 @@ private final class StubSubtitleInfo: SubtitleInfo {
 }
 
 class SubtitleTest: XCTestCase {
+    func testEmbeddedSubtitleCanBeRepublishedAfterURLResetWithoutDuplicates() {
+        let model = SubtitleModel()
+        let info = StubSubtitleInfo()
+        model.addSubtitle(info: info)
+        XCTAssertEqual(model.subtitleInfos.count, 1)
+
+        model.url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString).appendingPathExtension("mkv")
+        XCTAssertTrue(model.subtitleInfos.isEmpty)
+
+        model.addSubtitle(info: info)
+        model.addSubtitle(info: info)
+        XCTAssertEqual(model.subtitleInfos.count, 1)
+        XCTAssertTrue(model.subtitleInfos.first.map { $0 === info } ?? false)
+    }
+
     func testSrt() {
         let string = """
         1

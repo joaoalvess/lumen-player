@@ -81,12 +81,15 @@ struct TVTrackPopover: View {
             .padding(.horizontal, 28)
         sectionHeader("Faixa de áudio")
             .padding(.top, 4)
+        let pendingTrackID = config.audioTrackSelectionState.pendingTrackID
         rowList(count: audioTracks.count) {
             ForEach(audioTracks, id: \.trackID) { track in
                 popoverRow(id: String(track.trackID),
                            label: track.language ?? track.name,
-                           isSelected: track.isEnabled) {
-                    config.playerLayer?.player.select(track: track)
+                           isSelected: track.isEnabled,
+                           isPending: pendingTrackID == track.trackID,
+                           isDisabled: pendingTrackID != nil) {
+                    config.selectAudioTrack(track)
                 }
             }
         }
@@ -115,17 +118,34 @@ struct TVTrackPopover: View {
         }
     }
 
-    private func popoverRow(id: String, label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    private func popoverRow(
+        id: String,
+        label: String,
+        isSelected: Bool,
+        isPending: Bool = false,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 22, weight: .semibold))
-                    .opacity(isSelected ? 1 : 0)
+                Group {
+                    if isPending {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 22, weight: .semibold))
+                            .opacity(isSelected ? 1 : 0)
+                    }
+                }
+                .frame(width: 24, height: 24)
                 Text(label)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
         }
+        .disabled(isDisabled)
         .focused($focusedRow, equals: id)
     }
 }

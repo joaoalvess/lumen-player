@@ -44,4 +44,36 @@ class ProAVAudioSwitchTest: XCTestCase {
         XCTAssertEqual(action(target: 2, active: nil, preferred: 2), .ignore)
         XCTAssertEqual(action(target: 3, active: nil, preferred: 2), .hotSwitch)
     }
+
+    @MainActor
+    func testFailedBitmapSubtitleSwitchFallsBackOnlyWhenTheDesiredTracksAreStillMissing() {
+        XCTAssertTrue(ProAVPlayer.shouldColdRestartTrackSwitch(outcome: .failed, selectionNeedsRestart: true, purpose: .bitmapSubtitle))
+        XCTAssertFalse(ProAVPlayer.shouldColdRestartTrackSwitch(outcome: .failed, selectionNeedsRestart: false, purpose: .bitmapSubtitle))
+        XCTAssertFalse(ProAVPlayer.shouldColdRestartTrackSwitch(outcome: .committed, selectionNeedsRestart: true, purpose: .bitmapSubtitle))
+        XCTAssertFalse(ProAVPlayer.shouldColdRestartTrackSwitch(outcome: .cancelled, selectionNeedsRestart: true, purpose: .bitmapSubtitle))
+    }
+
+    @MainActor
+    func testAudioSwitchFailureNeverFallsBackToAColdRestart() {
+        XCTAssertFalse(ProAVPlayer.shouldColdRestartTrackSwitch(outcome: .failed, selectionNeedsRestart: true, purpose: .audio))
+        XCTAssertFalse(ProAVPlayer.shouldColdRestartTrackSwitch(outcome: .failed, selectionNeedsRestart: false, purpose: .audio))
+    }
+
+    @MainActor
+    func testCombinedTrackSelectionPreservesTheOtherActiveTrack() {
+        let matching = ProAVTrackSelection(audioTrackID: 2, subtitlePreference: .track(7))
+        XCTAssertFalse(ProAVPlayer.trackSelectionNeedsRestart(matching, activeAudioTrackID: 2, activeBitmapSubtitleTrackID: 7))
+
+        let differentAudio = ProAVTrackSelection(audioTrackID: 3, subtitlePreference: .track(7))
+        XCTAssertTrue(ProAVPlayer.trackSelectionNeedsRestart(differentAudio, activeAudioTrackID: 2, activeBitmapSubtitleTrackID: 7))
+
+        let differentSubtitle = ProAVTrackSelection(audioTrackID: 2, subtitlePreference: .track(8))
+        XCTAssertTrue(ProAVPlayer.trackSelectionNeedsRestart(differentSubtitle, activeAudioTrackID: 2, activeBitmapSubtitleTrackID: 7))
+    }
+
+    @MainActor
+    func testDisabledAndAutomaticBitmapPreferencesNeedNoRestartByThemselves() {
+        XCTAssertFalse(ProAVPlayer.trackSelectionNeedsRestart(.init(audioTrackID: nil, subtitlePreference: .disabled), activeAudioTrackID: 2, activeBitmapSubtitleTrackID: 7))
+        XCTAssertFalse(ProAVPlayer.trackSelectionNeedsRestart(.init(audioTrackID: nil, subtitlePreference: .automatic), activeAudioTrackID: 2, activeBitmapSubtitleTrackID: nil))
+    }
 }
