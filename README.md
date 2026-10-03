@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🌗 Lumen
+# Lumen
 
 **A media player framework for Apple platforms — built for the living room.**
 
@@ -19,38 +19,38 @@ Most players on tvOS force a choice: use `AVPlayer` and get native Dolby Vision 
 
 It ships with a complete SwiftUI interface designed for the Siri Remote, a network cache built for streaming over HTTP, and subtitle rendering that survives fansub ASS.
 
-## ✨ Features
+## Features
 
 **Picture & sound**
-- 🎞️ Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` and carries the `dvcC`/`dvvC` configuration box through, so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
-- 🧬 **Profile 7 is converted to 8.1** on the way through the remux: the enhancement-layer NAL units are dropped and the RPU is rewritten single-layer with libdovi. Without that conversion the remux engine refuses profile 7 outright and playback falls back to the FFmpeg engine. Implemented and unit-tested; not yet checked against a real Dolby Vision display
-- 🔉 E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. For Atmos the `moov` is held back until the muxer has parsed an audio frame — which is what lets it write the JOC fields of the `dec3` box — and the playlist declares `CHANNELS="16/JOC"` when the decoder reports the DD+ Atmos profile. Same caveat: the code path is there, the receiver check isn't done
-- 🎛️ TrueHD and DTS are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone
-- 📼 MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
-- 🎚️ The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
-- 📶 On tvOS, frame rate and dynamic range are handed to the display through `AVDisplayCriteria` — so the TV can switch mode to match the content, when the viewer has Match Content enabled
-- 🔊 Multichannel output on five interchangeable audio backends, swappable via `KSOptions.audioPlayerType`; `AudioRendererPlayer` is the one that enables system spatialization
+- Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` and carries the `dvcC`/`dvvC` configuration box through, so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
+- **Profile 7 is converted to 8.1** on the way through the remux: the enhancement-layer NAL units are dropped and the RPU is rewritten single-layer with libdovi. Without that conversion the remux engine refuses profile 7 outright and playback falls back to the FFmpeg engine. Implemented and unit-tested; not yet checked against a real Dolby Vision display
+- E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. For Atmos the `moov` is held back until the muxer has parsed an audio frame — which is what lets it write the JOC fields of the `dec3` box — and the playlist declares `CHANNELS="16/JOC"` when the decoder reports the DD+ Atmos profile. Same caveat: the code path is there, the receiver check isn't done
+- TrueHD and DTS are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone. The transcoder also caps the sample rate at 48 kHz, so an 88.2/96/192 kHz track is resampled down and that part is not lossless; bitstream-copied FLAC and ALAC keep their source rate
+- MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
+- The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
+- On tvOS, frame rate and dynamic range are handed to the display through `AVDisplayCriteria` — so the TV can switch mode to match the content, when the viewer has Match Content enabled
+- Multichannel output on five interchangeable audio backends, swappable via `KSOptions.audioPlayerType`; `AudioRendererPlayer` is the one that enables system spatialization
 
 **Interface**
-- 📺 A full tvOS player UI — transport bar, info panels, track popover, content tabs
-- 🖼️ **Scrub previews** — live thumbnails while you seek, decoded on a dedicated engine
-- 🎯 Focus model built for the remote from the start, not adapted from touch
-- 🪟 Picture in Picture — subtitles are a SwiftUI overlay, so they stay in the app window and don't follow the PiP layer
+- A full tvOS player UI — transport bar, info panels, track popover, content tabs
+- **Scrub previews** — live thumbnails while you seek, decoded on a dedicated engine
+- Focus model built for the remote from the start, not adapted from touch
+- Picture in Picture — subtitles are a SwiftUI overlay, so they stay in the app window and don't follow the PiP layer
 
 **Streaming**
-- 💾 Byte-range **disk cache** backed by `URLSession` — feeds FFmpeg through a custom AVIO context and `AVPlayer` through a resource loader
-- ⚡ Fast seeking inside cached ranges — a seek that lands on cached bytes costs no round trip. The cache fills on demand and never fetches less than 1 MB at a time; there is no background precaching ahead of the playhead
-- 🧠 Short forward seeks are served **straight from the packets already in RAM** — no demuxer seek, no round trip. Anything outside the buffered window falls back to the normal seek path
-- 🔀 **Hot source switching** — opt-in via `isSourceSwitchEnabled`: swapping to another URL of the same title prepares the new source in parallel and only commits when it is ready, so the current frame stays on screen instead of a teardown. On the remux engine playback rewinds by the remux latency at the swap
-- 🌐 Opt-in: set `diskCacheDirectory` and HTTP(S) reads go through `URLSession` instead of FFmpeg's network layer. URLs ending in `.m3u8`/`.m3u` are excluded, and scrub thumbnails always open through FFmpeg's own stack
+- Byte-range **disk cache** backed by `URLSession` — feeds FFmpeg through a custom AVIO context and `AVPlayer` through a resource loader
+- Fast seeking inside cached ranges — a seek that lands on cached bytes costs no round trip. The cache fills on demand and never fetches less than 1 MB at a time; there is no background precaching ahead of the playhead
+- Short forward seeks are served **straight from the packets already in RAM** — no demuxer seek, no round trip. Anything outside the buffered window falls back to the normal seek path
+- **Hot source switching** — opt-in via `isSourceSwitchEnabled`: swapping to another URL of the same title prepares the new source in parallel and only commits when it is ready, so the current frame stays on screen instead of a teardown. On the remux engine the resume point is computed against the new source's own timeline at commit time, so playback carries on from where it was instead of rewinding
+- Opt-in: set `diskCacheDirectory` and HTTP(S) reads go through `URLSession` instead of FFmpeg's network layer. URLs ending in `.m3u8`/`.m3u` are excluded, and scrub thumbnails always open through FFmpeg's own stack
 
 **Subtitles**
-- 🔤 ASS/SSA, SRT and WebVTT parsed and rendered natively, with positioning and styling
-- 📦 Embedded-font extraction — fansub releases render with their own fonts
-- 📐 Font scaling derived from the script's `PlayResY` instead of guessed
-- 🈯 Text, image (SUP/PGS) and closed captions
+- ASS/SSA, SRT and WebVTT parsed and rendered natively, with positioning and styling
+- Embedded-font extraction — fansub releases render with their own fonts
+- Font scaling derived from the script's `PlayResY` instead of guessed
+- Text, image (SUP/PGS) and closed captions
 
-## 🎛️ Three engines, one API
+## Three engines, one API
 
 You pick a first and a second engine. When the first one reports an error — opening the stream or during playback — Lumen shuts it down and restarts on the second. There are two slots, not a three-deep chain: once the second engine fails, playback goes to `.error`.
 
@@ -67,7 +67,7 @@ KSOptions.secondPlayerType = KSMEPlayer.self
 
 Two cases override your first choice: AirPlay forces `KSAVPlayer`, and any non-plane display mode forces `KSMEPlayer`.
 
-## 📦 Requirements
+## Requirements
 
 There are two floors, and they are not the same one:
 
@@ -80,9 +80,9 @@ There are two floors, and they are not the same one:
 
 Scrub thumbnails are tvOS-only, at any version.
 
-- Swift 5.9+ / Xcode 15+
+- Xcode 16+ (Swift 6.0 compiler). The manifest is `swift-tools-version:5.9` and compiles in the Swift 5 language mode, but the sources use `@preconcurrency` and `@retroactive` conformances, which the compiler only accepts from Swift 6.0 on
 
-## 🚀 Installation
+## Installation
 
 Add Lumen as a remote Swift package. There are no tagged releases yet, so depend on the branch:
 
@@ -112,7 +112,7 @@ targets: [
 ]
 ```
 
-## 🎬 Usage
+## Usage
 
 ```swift
 import SwiftUI
@@ -165,7 +165,7 @@ KSVideoPlayerView(coordinator: coordinator, url: url, options: options)
     )
 ```
 
-## 🏗️ Module map
+## Module map
 
 | Path | Responsibility |
 | --- | --- |
@@ -179,14 +179,14 @@ KSVideoPlayerView(coordinator: coordinator, url: url, options: options)
 | `Sources/Lumen/Video/` | The legacy UIKit/AppKit player interface — `VideoPlayerView`, fullscreen transitions, gestures, `KSPlayerResource` |
 | `Sources/Lumen/Audio/` | `AudioPlayerView`, the audio-only UIKit view. The audio *pipeline* lives in `MEPlayer/` |
 
-## 🗺️ Roadmap
+## Roadmap
 
-What's planned next — HDR10+ dynamic metadata, background read-ahead, full ASS effects — lives in [`ROADMAP.md`](./ROADMAP.md).
+What's planned next — instant backward seeks, preparing a source before the viewer picks it, background read-ahead, full ASS effects — lives in [`ROADMAP.md`](./ROADMAP.md).
 
-## 🙏 Credits
+## Credits
 
 Lumen grew out of [**KSPlayer**](https://github.com/kingslay/KSPlayer) by [kingslay](https://github.com/kingslay), and owes it the foundation it stands on. It also builds on [FFmpeg](https://ffmpeg.org) and the build scripts from [MPVKit](https://github.com/mpvkit/MPVKit).
 
-## ⚖️ License
+## License
 
 GPL-3.0 — see [`LICENSE`](./LICENSE).
