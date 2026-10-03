@@ -205,14 +205,24 @@ public class KSAVPlayer {
         var attempts: Int
     }
 
+    private struct ActiveSourceCommit {
+        let generation: Int
+        let pending: PendingSourceSwitch
+    }
+
     private let sourceSwitchLock = NSLock()
     private var pendingSourceSwitch: PendingSourceSwitch?
     private var activeSourceOwnershipTransfer: ActiveSourceOwnershipTransfer?
     private var sourceOwnershipTransferGeneration = 0
     private var currentVideoOutput: AVPlayerItemVideoOutput?
     private var sourceCommitGeneration = 0
+    private var activeSourceCommit: ActiveSourceCommit?
     private var frameHandoffGeneration = 0
     private var activeFrameHandoff: ActiveFrameHandoff?
+    var isCommittingSourceSwitch: Bool {
+        activeSourceCommit != nil
+    }
+
     private var error: Error? {
         didSet {
             if let error {
@@ -633,6 +643,7 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
         KSLog("shutdown \(self)")
         abandonPendingSourceSwitch(result: .cancelled)
         sourceCommitGeneration &+= 1
+        cancelActiveSourceCommit()
         finishFrameHandoff(result: .cancelled, renderedFirstFrame: false)
         isReadyToPlay = false
         playbackState = .stopped
@@ -809,18 +820,21 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     private func commitTransferredSourceSwitch(_ pending: PendingSourceSwitch, after currentItem: AVPlayerItem) {
+        cancelActiveSourceCommit()
         let previousAsset = urlAsset
         let previousLoader = cacheResourceLoader
         let currentTime = player.currentTime()
         let resumeTime = currentTime.isNumeric ? CMTime(seconds: currentTime.seconds + pending.resumeShift) : currentTime
         sourceCommitGeneration &+= 1
         let commitGeneration = sourceCommitGeneration
+        activeSourceCommit = ActiveSourceCommit(generation: commitGeneration, pending: pending)
         if let freezeFrame = captureCurrentFrame() {
             playerView.showFreezeFrame(freezeFrame)
         }
         urlAsset = pending.asset
         cacheResourceLoader = pending.loader
         options = pending.options
+        currentItem.cancelPendingSeeks()
         player.insert(pending.item, after: currentItem)
         player.advanceToNextItem()
         currentVideoOutput = pending.videoOutput
@@ -873,9 +887,18 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
         } else {
             player.pause()
         }
+        guard activeSourceCommit?.generation == generation else { return }
         KSLog("[\(pending.diagnosticLabel)] restore seek finished=\(seekFinished) target=\(resumeTime.seconds) elapsed=\(CACurrentMediaTime() - pending.startedAt)")
         beginFrameHandoff(pending: pending)
+        activeSourceCommit = nil
         pending.completion(.committed)
+    }
+
+    private func cancelActiveSourceCommit() {
+        guard let commit = activeSourceCommit else { return }
+        activeSourceCommit = nil
+        KSLog("[\(commit.pending.diagnosticLabel)] restore seek cancelled elapsed=\(CACurrentMediaTime() - commit.pending.startedAt)")
+        commit.pending.completion(.cancelled)
     }
 
     func abandonPendingSourceSwitch(result: KSAVSourceSwitchResult = .cancelled) {
@@ -938,9 +961,12 @@ extension KSAVPlayer: @preconcurrency MediaPlayerProtocol {
 
     private func pollFrameHandoff(generation: Int) {
         guard let handoff = activeFrameHandoff,
-              handoff.generation == generation,
-              player.currentItem === handoff.item
+              handoff.generation == generation
         else {
+            return
+        }
+        guard player.currentItem === handoff.item else {
+            finishFrameHandoff(result: .cancelled, renderedFirstFrame: false)
             return
         }
         let itemTime = handoff.videoOutput.itemTime(forHostTime: CACurrentMediaTime())

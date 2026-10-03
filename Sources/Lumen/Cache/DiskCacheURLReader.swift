@@ -182,6 +182,9 @@ public final class DiskCacheURLReader {
         }
         switch response.statusCode {
         case 206:
+            guard DiskCacheURLReader.isValidPartialResponse(contentRange: response.value(forHTTPHeaderField: "Content-Range"), offset: offset, bodyLength: box.data.count) else {
+                return nil
+            }
             if cache.contentLength == nil {
                 cache.contentLength = DiskCacheURLReader.totalLength(of: response)
             }
@@ -212,5 +215,41 @@ public final class DiskCacheURLReader {
             return nil
         }
         return total
+    }
+
+    struct ContentRange: Equatable {
+        let start: Int64
+        let end: Int64
+        let total: Int64?
+    }
+
+    static func parseContentRange(_ value: String) -> ContentRange? {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.lowercased().hasPrefix("bytes") else {
+            return nil
+        }
+        let spec = trimmed.dropFirst(5).trimmingCharacters(in: CharacterSet(charactersIn: " ="))
+        let parts = spec.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2 else {
+            return nil
+        }
+        let bounds = parts[0].split(separator: "-", omittingEmptySubsequences: false)
+        guard bounds.count == 2, let start = Int64(bounds[0]), let end = Int64(bounds[1]), start >= 0, end >= start else {
+            return nil
+        }
+        guard parts[1] != "*" else {
+            return ContentRange(start: start, end: end, total: nil)
+        }
+        guard let total = Int64(parts[1]), total > end else {
+            return nil
+        }
+        return ContentRange(start: start, end: end, total: total)
+    }
+
+    static func isValidPartialResponse(contentRange: String?, offset: Int64, bodyLength: Int) -> Bool {
+        guard let contentRange, let range = parseContentRange(contentRange), range.start == offset else {
+            return false
+        }
+        return Int64(bodyLength) - 1 <= range.end - range.start
     }
 }

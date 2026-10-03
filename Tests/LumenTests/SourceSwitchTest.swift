@@ -37,6 +37,7 @@ class SourceSwitchFakeEngineBase {
     private(set) var shutdownCount = 0
     private(set) var seekTimes = [TimeInterval]()
     var completesSeekImmediately = true
+    var failsPendingSeeksOnShutdown = false
     var isReadyToPlay = false
     var duration: TimeInterval = 0
     var fileSize: Double = 0
@@ -78,6 +79,11 @@ class SourceSwitchFakeEngineBase {
     func shutdown() {
         shutdownCount += 1
         isReadyToPlay = false
+        if failsPendingSeeksOnShutdown {
+            let completions = pendingSeekCompletions
+            pendingSeekCompletions.removeAll()
+            completions.forEach { $0(false) }
+        }
     }
 
     func replace(url: URL, options: KSOptions) {
@@ -207,6 +213,14 @@ class SourceSwitchTest: XCTestCase {
             drained.fulfill()
         }
         wait(for: [drained], timeout: 2)
+    }
+
+    private func waitOnMainQueue(for interval: TimeInterval) {
+        let elapsed = expectation(description: "main queue waited")
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval) {
+            elapsed.fulfill()
+        }
+        wait(for: [elapsed], timeout: interval + 2)
     }
 
     @MainActor
@@ -637,5 +651,257 @@ class SourceSwitchTest: XCTestCase {
         XCTAssertEqual(fallback.seekTimes, [90])
         XCTAssertEqual(fallback.playbackState, .playing)
         XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testUnseekableBufferedStreamDropsPendingSeekAndAutoPlaysAfterTheGracePeriod() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        layer.seekabilityGracePeriod = 0.05
+        let engine = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        var seekResult: Bool?
+        layer.seek(time: 40, autoPlay: true) { seekResult = $0 }
+
+        engine.isReadyToPlay = true
+        engine.duration = 120
+        engine.seekable = false
+        engine.loadState = .playable
+        layer.readyToPlay(player: engine)
+
+        XCTAssertEqual(seekResult, false)
+        XCTAssertEqual(engine.playbackState, .idle)
+        XCTAssertEqual(layer.state, .readyToPlay)
+
+        waitOnMainQueue(for: 0.3)
+
+        XCTAssertEqual(engine.seekTimes, [])
+        XCTAssertEqual(engine.playbackState, .playing)
+        XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testUnseekableStreamStopsWaitingForSeekabilityAfterTheGracePeriodOnceItIsPlayable() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        layer.seekabilityGracePeriod = 0.05
+        let engine = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        layer.seek(time: 40, autoPlay: true) { _ in }
+
+        engine.isReadyToPlay = true
+        engine.duration = 120
+        engine.seekable = false
+        layer.readyToPlay(player: engine)
+
+        XCTAssertEqual(engine.playbackState, .idle)
+        XCTAssertEqual(layer.state, .readyToPlay)
+
+        engine.loadState = .playable
+        layer.changeLoadState(player: engine)
+
+        XCTAssertEqual(engine.playbackState, .idle)
+        XCTAssertEqual(layer.state, .readyToPlay)
+
+        waitOnMainQueue(for: 0.3)
+
+        XCTAssertEqual(engine.seekTimes, [])
+        XCTAssertEqual(engine.playbackState, .playing)
+        XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testSeekabilityReportedLateWithinTheGracePeriodStillRestoresThePosition() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        layer.seekabilityGracePeriod = 0.05
+        let engine = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        layer.seek(time: 40, autoPlay: true) { _ in }
+
+        engine.isReadyToPlay = true
+        engine.duration = 120
+        engine.seekable = false
+        engine.loadState = .playable
+        layer.readyToPlay(player: engine)
+        engine.seekable = true
+
+        XCTAssertEqual(engine.seekTimes, [])
+
+        waitOnMainQueue(for: 0.3)
+
+        XCTAssertEqual(engine.seekTimes, [40])
+        XCTAssertEqual(engine.playbackState, .playing)
+        XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testFailedSeekIsNotRetriedByLaterLoadChanges() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        let engine = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        engine.isReadyToPlay = true
+        engine.completesSeekImmediately = false
+        engine.loadState = .playable
+        layer.readyToPlay(player: engine)
+        var results = [Bool]()
+
+        layer.seek(time: 30, autoPlay: true) { results.append($0) }
+        engine.completeSeek(success: false)
+
+        XCTAssertEqual(results, [false])
+        XCTAssertEqual(engine.playbackState, .playing)
+        XCTAssertEqual(layer.state, .bufferFinished)
+
+        engine.loadState = .loading
+        layer.changeLoadState(player: engine)
+
+        XCTAssertEqual(layer.state, .buffering)
+
+        engine.loadState = .playable
+        layer.changeLoadState(player: engine)
+
+        XCTAssertEqual(engine.seekTimes, [30])
+        XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testSupersededSeekFailureKeepsTheNewerIntent() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        let engine = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        engine.isReadyToPlay = true
+        engine.completesSeekImmediately = false
+        layer.readyToPlay(player: engine)
+        var results = [Bool]()
+
+        layer.seek(time: 10, autoPlay: true) { results.append($0) }
+        layer.seek(time: 20, autoPlay: false) { results.append($0) }
+        engine.completeSeek(success: false)
+
+        XCTAssertEqual(results, [false])
+        XCTAssertEqual(engine.playbackState, .seeking)
+        XCTAssertEqual(layer.state, .readyToPlay)
+
+        engine.completeSeek(success: true)
+
+        XCTAssertEqual(results, [false, true])
+        XCTAssertEqual(engine.seekTimes, [10, 20])
+        XCTAssertEqual(engine.playbackState, .paused)
+        XCTAssertEqual(layer.state, .paused)
+    }
+
+    @MainActor
+    func testSeekFailedByTheShutdownOfTheFailingEngineStillRestoresTheFallbackPosition() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        KSOptions.secondPlayerType = FallbackFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        let primary = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        primary.isReadyToPlay = true
+        primary.completesSeekImmediately = false
+        primary.failsPendingSeeksOnShutdown = true
+        layer.readyToPlay(player: primary)
+        layer.seek(time: 75, autoPlay: true) { _ in }
+
+        layer.finish(player: primary, error: NSError(domain: "test", code: 4))
+
+        XCTAssertEqual(primary.playbackState, .seeking)
+        let fallback = try XCTUnwrap(layer.player as? FallbackFakeEngine)
+        fallback.isReadyToPlay = true
+        fallback.loadState = .playable
+        layer.readyToPlay(player: fallback)
+
+        XCTAssertEqual(fallback.seekTimes, [75])
+        XCTAssertEqual(fallback.playbackState, .playing)
+        XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testSeekFailedBeforeTheEngineFailureStillRestoresTheFallbackPosition() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        KSOptions.secondPlayerType = FallbackFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        let primary = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        primary.isReadyToPlay = true
+        primary.completesSeekImmediately = false
+        layer.readyToPlay(player: primary)
+        var seekResult: Bool?
+        layer.seek(time: 75, autoPlay: true) { seekResult = $0 }
+
+        primary.completeSeek(success: false)
+
+        XCTAssertEqual(seekResult, false)
+
+        layer.finish(player: primary, error: NSError(domain: "test", code: 5))
+
+        let fallback = try XCTUnwrap(layer.player as? FallbackFakeEngine)
+        fallback.isReadyToPlay = true
+        fallback.loadState = .playable
+        layer.readyToPlay(player: fallback)
+
+        XCTAssertEqual(fallback.seekTimes, [75])
+        XCTAssertEqual(fallback.playbackState, .playing)
+        XCTAssertEqual(layer.state, .bufferFinished)
+    }
+
+    @MainActor
+    func testStaleFailedSeekIsNotUsedAsTheFallbackPosition() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        KSOptions.secondPlayerType = FallbackFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/movie.mkv"))
+        let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: KSOptions())
+        layer.failedSeekFallbackWindow = 0
+        let primary = try XCTUnwrap(layer.player as? ColdOnlyFakeEngine)
+        primary.isReadyToPlay = true
+        primary.completesSeekImmediately = false
+        layer.readyToPlay(player: primary)
+        layer.seek(time: 75, autoPlay: true) { _ in }
+
+        primary.completeSeek(success: false)
+        layer.finish(player: primary, error: NSError(domain: "test", code: 6))
+
+        let fallback = try XCTUnwrap(layer.player as? FallbackFakeEngine)
+        fallback.isReadyToPlay = true
+        fallback.loadState = .playable
+        layer.readyToPlay(player: fallback)
+
+        XCTAssertFalse(fallback.seekTimes.contains(75))
+    }
+
+    @MainActor
+    func testEngineFallbackIgnoresTheLateCancellationOfTheFailingEngineSwitch() throws {
+        KSOptions.firstPlayerType = SwitchableFakeEngine.self
+        KSOptions.secondPlayerType = FallbackFakeEngine.self
+        let urlA = try XCTUnwrap(URL(string: "https://example.com/a.m3u8"))
+        let urlB = try XCTUnwrap(URL(string: "https://example.com/b.m3u8"))
+        let options = KSOptions()
+        let layer = KSPlayerLayer(url: urlA, isAutoPlay: false, options: options)
+        let primary = try XCTUnwrap(layer.player as? SwitchableFakeEngine)
+        primary.isReadyToPlay = true
+        layer.readyToPlay(player: primary)
+        var results = [Bool]()
+        layer.switchSource(url: urlB, options: options) { results.append($0) }
+        layer.switchSource(url: urlB, options: options) { results.append($0) }
+
+        layer.finish(player: primary, error: NSError(domain: "test", code: 6))
+
+        let fallback = try XCTUnwrap(layer.player as? FallbackFakeEngine)
+        XCTAssertNil(layer.pendingSourceSwitchURL)
+        XCTAssertEqual(results, [false])
+
+        primary.completePendingSwitch(success: false)
+        drainMainQueue()
+
+        XCTAssertEqual(results, [false, false])
+        XCTAssertTrue((layer.player as AnyObject) === fallback)
+        XCTAssertEqual(layer.url, urlA)
+        XCTAssertEqual(primary.switchRequests, [urlB])
+        XCTAssertEqual(fallback.replacedURLs, [])
+        XCTAssertEqual(fallback.shutdownCount, 0)
+        XCTAssertEqual(fallback.prepareToPlayCount, 1)
     }
 }

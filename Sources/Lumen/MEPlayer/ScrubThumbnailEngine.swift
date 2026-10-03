@@ -17,6 +17,7 @@ public struct ScrubThumbnail: Sendable {
 }
 
 final class ScrubThumbnailEngine: @unchecked Sendable {
+    private static let maximumVideoPacketsPerThumbnail = 200
     private let queue = DispatchQueue(label: "lumen.scrub.thumbnail", qos: .userInitiated)
     private var formatCtx: UnsafeMutablePointer<AVFormatContext>?
     private var codecCtx: UnsafeMutablePointer<AVCodecContext>?
@@ -26,6 +27,10 @@ final class ScrubThumbnailEngine: @unchecked Sendable {
     private var timeBase = Timebase.defaultValue
     private var streamTimeBase = AVRational(num: 1, den: 1)
     private var startTime = Int64(0)
+
+    deinit {
+        closeSync()
+    }
 
     func open(urlString: String, formatOptions: [String: Any], width: Int32) async -> Bool {
         await withCheckedContinuation { continuation in
@@ -129,13 +134,15 @@ final class ScrubThumbnailEngine: @unchecked Sendable {
         avcodec_flush_buffers(codecCtx)
         var packet = AVPacket()
         var thumbnail: ScrubThumbnail?
-        while av_read_frame(formatCtx, &packet) >= 0 {
+        var videoPacketCount = 0
+        while videoPacketCount < Self.maximumVideoPacketsPerThumbnail, av_read_frame(formatCtx, &packet) >= 0 {
             defer {
                 av_packet_unref(&packet)
             }
             guard packet.stream_index == videoStreamIndex else {
                 continue
             }
+            videoPacketCount += 1
             guard avcodec_send_packet(codecCtx, &packet) >= 0 else {
                 break
             }

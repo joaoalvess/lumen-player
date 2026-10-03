@@ -62,4 +62,55 @@ class DiskByteCacheTest: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: oldDataPath))
         second.close()
     }
+
+    func testFarOffsetWriteIsBudgetedByStoredBytes() throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let other = try XCTUnwrap(DiskByteCache(directory: directory, key: "other-title", maxBytes: 1_000_000))
+        other.write(Data(repeating: 3, count: 4096), at: 0)
+        other.close()
+        let otherDataPath = directory.appendingPathComponent(DiskByteCache.entryName(for: "other-title")).appendingPathExtension(DiskByteCache.dataPathExtension).path
+        let tailOffset = Int64(10) * 1024 * 1024 * 1024
+        let cache = try XCTUnwrap(DiskByteCache(directory: directory, key: "large-title", maxBytes: 1_000_000))
+        cache.write(Data(repeating: 1, count: 4096), at: tailOffset)
+        cache.write(Data(repeating: 2, count: 4096), at: 0)
+        XCTAssertEqual(cache.cachedData(at: tailOffset, maxLength: 4096), Data(repeating: 1, count: 4096))
+        XCTAssertEqual(cache.cachedData(at: 0, maxLength: 4096), Data(repeating: 2, count: 4096))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: otherDataPath))
+        cache.close()
+        let reopened = try XCTUnwrap(DiskByteCache(directory: directory, key: "large-title", maxBytes: 1_000_000))
+        XCTAssertEqual(reopened.cachedData(at: tailOffset, maxLength: 4096), Data(repeating: 1, count: 4096))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: otherDataPath))
+        reopened.close()
+    }
+
+    func testOversizedWriteIsSkippedWithoutDisablingWrites() throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = try XCTUnwrap(DiskByteCache(directory: directory, key: "title-d", maxBytes: 10_000))
+        cache.write(Data(repeating: 1, count: 20_000), at: 0)
+        XCTAssertNil(cache.cachedData(at: 0, maxLength: 1))
+        cache.write(Data(repeating: 2, count: 1000), at: 50_000)
+        XCTAssertEqual(cache.cachedData(at: 50_000, maxLength: 1000), Data(repeating: 2, count: 1000))
+        cache.close()
+    }
+
+    func testFailedIndexWriteIsRetriedOnTheNextWrite() throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let maxBytes = Int64(64 * 1024 * 1024)
+        let flushBytes = 8 * 1024 * 1024
+        let cache = try XCTUnwrap(DiskByteCache(directory: directory, key: "title-e", maxBytes: maxBytes))
+        let indexURL = directory.appendingPathComponent(DiskByteCache.entryName(for: "title-e")).appendingPathExtension(DiskByteCache.indexPathExtension)
+        try FileManager.default.createDirectory(at: indexURL, withIntermediateDirectories: true)
+        try Data([0]).write(to: indexURL.appendingPathComponent("blocker"))
+        cache.write(Data(repeating: 7, count: flushBytes), at: 0)
+        try FileManager.default.removeItem(at: indexURL)
+        cache.write(Data([9]), at: Int64(flushBytes))
+        let reopened = try XCTUnwrap(DiskByteCache(directory: directory, key: "title-e", maxBytes: maxBytes))
+        XCTAssertEqual(reopened.cachedData(at: 0, maxLength: 4), Data(repeating: 7, count: 4))
+        XCTAssertEqual(reopened.cachedData(at: Int64(flushBytes), maxLength: 1), Data([9]))
+        reopened.close()
+        cache.close()
+    }
 }

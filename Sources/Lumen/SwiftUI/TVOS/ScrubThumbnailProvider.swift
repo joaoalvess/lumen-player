@@ -25,6 +25,10 @@ import Foundation
     private var pendingBucket: Int?
     private var isFetching = false
 
+    deinit {
+        engine?.close()
+    }
+
     func startIfNeeded(url: URL?, options: KSOptions?, duration: TimeInterval) {
         guard KSOptions.enableScrubPreview, status == .idle, let url, duration > 0 else {
             return

@@ -11,6 +11,7 @@ public final class ProAVLoopbackHTTPServer: ProAVLocalServer, @unchecked Sendabl
     private var listener: NWListener?
     private var connections = [ObjectIdentifier: NWConnection]()
     private var rootDirectory: URL?
+    private var pendingStartCompletion: (@Sendable (Result<URL, Error>) -> Void)?
 
     public init() {}
 
@@ -29,21 +30,21 @@ public final class ProAVLoopbackHTTPServer: ProAVLocalServer, @unchecked Sendabl
             }
             self.rootDirectory = rootDirectory
             self.listener = listener
-            var pendingCompletion: ((Result<URL, Error>) -> Void)? = completion
+            self.pendingStartCompletion = completion
             listener.stateUpdateHandler = { [weak self] state in
+                guard let self, self.listener === listener else { return }
                 switch state {
                 case .ready:
                     if let port = listener.port, let url = URL(string: "http://127.0.0.1:\(port.rawValue)/") {
-                        pendingCompletion?(.success(url))
+                        self.resolvePendingStart(.success(url))
                     } else {
-                        pendingCompletion?(.failure(NSError(description: "ProAV loopback server has no port")))
+                        self.resolvePendingStart(.failure(NSError(description: "ProAV loopback server has no port")))
                     }
-                    pendingCompletion = nil
                 case let .failed(error):
-                    pendingCompletion?(.failure(error))
-                    pendingCompletion = nil
-                    self?.queue.async {
-                        self?.shutdownLocked()
+                    self.resolvePendingStart(.failure(error))
+                    self.queue.async { [weak self] in
+                        guard let self, self.listener === listener else { return }
+                        self.shutdownLocked()
                     }
                 default:
                     break
@@ -70,6 +71,13 @@ public final class ProAVLoopbackHTTPServer: ProAVLocalServer, @unchecked Sendabl
         rootDirectory = nil
         connections.values.forEach { $0.cancel() }
         connections.removeAll()
+        resolvePendingStart(.failure(NSError(description: "ProAV loopback server stopped before it was ready")))
+    }
+
+    private func resolvePendingStart(_ result: Result<URL, Error>) {
+        let completion = pendingStartCompletion
+        pendingStartCompletion = nil
+        completion?(result)
     }
 
     private func accept(connection: NWConnection) {
@@ -126,7 +134,11 @@ public final class ProAVLoopbackHTTPServer: ProAVLocalServer, @unchecked Sendabl
             send(header: Self.header(status: "404 Not Found", contentType: nil, contentLength: 0, contentRange: nil), body: nil, on: connection)
             return
         }
-        let fileSize = handle.proAVLength()
+        guard let fileSize = handle.proAVLength() else {
+            handle.proAVClose()
+            send(header: Self.header(status: "500 Internal Server Error", contentType: nil, contentLength: 0, contentRange: nil), body: nil, on: connection)
+            return
+        }
         let contentType = Self.contentType(forPathExtension: fileURL.pathExtension)
         var status = "200 OK"
         var start = UInt64(0)
@@ -165,22 +177,29 @@ public final class ProAVLoopbackHTTPServer: ProAVLocalServer, @unchecked Sendabl
         let relativePath = decodedPath.hasPrefix("/") ? String(decodedPath.dropFirst()) : decodedPath
         guard !relativePath.isEmpty else { return nil }
         let fileURL = rootDirectory.appendingPathComponent(relativePath)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else { return nil }
         return fileURL
     }
 
     private func send(header: String, body: Data?, on connection: NWConnection) {
-        var payload = Data(header.utf8)
-        if let body {
-            payload.append(body)
-        }
-        connection.send(content: payload, completion: .contentProcessed { [weak self] error in
+        let receiveNextRequest = NWConnection.SendCompletion.contentProcessed { [weak self] error in
             if error != nil {
                 connection.cancel()
             } else {
                 self?.receiveRequest(on: connection, buffered: Data())
             }
+        }
+        guard let body, !body.isEmpty else {
+            connection.send(content: Data(header.utf8), completion: receiveNextRequest)
+            return
+        }
+        connection.send(content: Data(header.utf8), completion: .contentProcessed { error in
+            if error != nil {
+                connection.cancel()
+            }
         })
+        connection.send(content: body, completion: receiveNextRequest)
     }
 
     private static func header(status: String, contentType: String?, contentLength: UInt64, contentRange: String?) -> String {
@@ -254,10 +273,9 @@ public final class ProAVLoopbackHTTPServer: ProAVLocalServer, @unchecked Sendabl
 }
 
 extension FileHandle {
-    func proAVLength() -> UInt64 {
+    func proAVLength() -> UInt64? {
         if #available(macOS 10.15.4, iOS 13.4, tvOS 13.4, *) {
-            let end = (try? seekToEnd()) ?? 0
-            return end
+            return try? seekToEnd()
         } else {
             return seekToEndOfFile()
         }

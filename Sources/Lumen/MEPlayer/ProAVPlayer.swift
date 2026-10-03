@@ -14,6 +14,11 @@ enum ProAVSeekRoute: Equatable {
     case restart
 }
 
+enum ProAVPendingSwitchSeekAction: Equatable {
+    case abort
+    case deferUntilCommitted
+}
+
 enum ProAVAudioSwitchAction: Equatable {
     case ignore
     case abortPending
@@ -99,12 +104,14 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
     private var remuxItem: MEPlayerItem?
     private var session: ProAVRemuxSession?
     private var serverBaseURL: URL?
+    private var serverGeneration = 0
     private var startOffset = TimeInterval(0)
     private var pendingSeekCompletion: ((Bool) -> Void)?
     private var launchIndex = 0
     private var activeLaunchIndex = 0
     private var delegateProxy: ProAVLaunchDelegateProxy?
     private var pendingSourceSwitch: PendingSourceSwitch?
+    private var deferredSeek: DeferredSeek?
     private var preferredAudioTrackID: Int32?
     private var audioSelectionGeneration = 0
     private var preferredSubtitlePreference = ProAVSubtitlePreference.automatic
@@ -132,6 +139,11 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
         let startedAt: TimeInterval
         let completion: (ProAVSourceSwitchOutcome) -> Void
         var innerSwitchStarted = false
+    }
+
+    private struct DeferredSeek {
+        let time: TimeInterval
+        let completion: (Bool) -> Void
     }
 
     public required init(url: URL, options: KSOptions) {
@@ -202,14 +214,18 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
         if let serverBaseURL {
             attach(baseURL: serverBaseURL, directoryName: directoryName)
         } else {
-            server.start(rootDirectory: workspaceURL) { [weak self] result in
+            serverGeneration &+= 1
+            let generation = serverGeneration
+            server.start(rootDirectory: workspaceURL) { [weak self, weak session = self.session] result in
                 runOnMainThread {
-                    guard let self else { return }
+                    guard let self, self.serverGeneration == generation else { return }
                     switch result {
                     case let .success(baseURL):
                         self.serverBaseURL = baseURL
+                        guard let session, self.session === session else { return }
                         self.attach(baseURL: baseURL, directoryName: directoryName)
                     case let .failure(serverError):
+                        guard let session, self.session === session else { return }
                         self.fail(error: NSError(description: "ProAV server start failed: \(serverError.localizedDescription)"))
                     }
                 }
@@ -252,7 +268,7 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
     }
 
     private func fail(error: NSError) {
-        abortPendingSourceSwitch()
+        abortPendingSourceSwitch(reissuesDeferredSeek: false)
         guard !didFail else { return }
         didFail = true
         let seekCompletion = pendingSeekCompletion
@@ -263,13 +279,14 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
         innerPlayer.shutdown()
         remuxItem?.shutdown()
         session?.requestCleanup()
+        serverGeneration &+= 1
         server.stop()
         serverBaseURL = nil
         delegate?.finish(player: self, error: error)
     }
 
     private func restart(at time: TimeInterval, completion: ((Bool) -> Void)?) {
-        abortPendingSourceSwitch()
+        abortPendingSourceSwitch(reissuesDeferredSeek: false)
         let previousCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
         previousCompletion?(false)
@@ -448,6 +465,13 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
         return .inner(target - startOffset)
     }
 
+    static func pendingSwitchSeekAction(route: ProAVSeekRoute, innerSwitchCommitting: Bool) -> ProAVPendingSwitchSeekAction {
+        guard case .inner = route, innerSwitchCommitting else {
+            return .abort
+        }
+        return .deferUntilCommitted
+    }
+
     static func audioSwitchAction(target: Int32, activeTrackID: Int32?, preferredTrackID: Int32?, pendingTrackID: Int32?, canHotSwitch: Bool) -> ProAVAudioSwitchAction {
         let currentTrackID = activeTrackID ?? preferredTrackID
         if let pendingTrackID {
@@ -535,18 +559,35 @@ public final class ProAVPlayer: AsyncAudioTrackSelecting {
         }
         KSLog("[\(pending.kind.diagnosticLabel)] remux committed elapsed=\(CACurrentMediaTime() - pending.startedAt) position=\(currentPlaybackTime) playing=\(isPlaying)")
         pending.completion(.committed)
+        if let deferred = takeDeferredSeek() {
+            seek(time: deferred.time, completion: deferred.completion)
+        }
     }
 
-    private func abortPendingSourceSwitch(outcome: ProAVSourceSwitchOutcome = .cancelled) {
-        guard let pending = pendingSourceSwitch else { return }
-        pendingSourceSwitch = nil
-        if pending.innerSwitchStarted {
-            innerPlayer.abandonPendingSourceSwitch()
+    private func takeDeferredSeek() -> DeferredSeek? {
+        let deferred = deferredSeek
+        deferredSeek = nil
+        return deferred
+    }
+
+    private func abortPendingSourceSwitch(outcome: ProAVSourceSwitchOutcome = .cancelled, reissuesDeferredSeek: Bool = true) {
+        let deferred = takeDeferredSeek()
+        if let pending = pendingSourceSwitch {
+            pendingSourceSwitch = nil
+            if pending.innerSwitchStarted {
+                innerPlayer.abandonPendingSourceSwitch()
+            }
+            pending.launch.item.delegate = nil
+            pending.launch.item.shutdown()
+            pending.launch.session.requestCleanup()
+            pending.completion(outcome)
         }
-        pending.launch.item.delegate = nil
-        pending.launch.item.shutdown()
-        pending.launch.session.requestCleanup()
-        pending.completion(outcome)
+        guard let replay = deferred else { return }
+        if reissuesDeferredSeek {
+            seek(time: replay.time, completion: replay.completion)
+        } else {
+            replay.completion(false)
+        }
     }
 
     fileprivate func launchDidOpen(index: Int) {
@@ -634,7 +675,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
 
     public func prepareToPlay() {
         if remuxItem != nil {
-            abortPendingSourceSwitch()
+            abortPendingSourceSwitch(reissuesDeferredSeek: false)
             teardownActiveLaunch()
         }
         didFail = false
@@ -673,7 +714,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
     }
 
     public func shutdown() {
-        abortPendingSourceSwitch()
+        abortPendingSourceSwitch(reissuesDeferredSeek: false)
         reportedReady = false
         let seekCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
@@ -685,6 +726,7 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
         session?.requestCleanup()
         remuxItem = nil
         session = nil
+        serverGeneration &+= 1
         server.stop()
         serverBaseURL = nil
         try? FileManager.default.removeItem(at: workspaceURL)
@@ -703,7 +745,17 @@ extension ProAVPlayer: @preconcurrency MediaPlayerProtocol {
            innerPlayer.isReadyToPlay,
            let session,
            case let .inner(innerTime) = route {
-            abortPendingSourceSwitch()
+            if let pendingSourceSwitch {
+                let innerSwitchCommitting = pendingSourceSwitch.innerSwitchStarted && innerPlayer.isCommittingSourceSwitch
+                switch ProAVPlayer.pendingSwitchSeekAction(route: .inner(innerTime), innerSwitchCommitting: innerSwitchCommitting) {
+                case .abort:
+                    abortPendingSourceSwitch(reissuesDeferredSeek: false)
+                case .deferUntilCommitted:
+                    takeDeferredSeek()?.completion(false)
+                    deferredSeek = DeferredSeek(time: target, completion: completion)
+                    return
+                }
+            }
             session.noteConsumed(seconds: innerTime)
             innerPlayer.seek(time: innerTime, completion: completion)
             return

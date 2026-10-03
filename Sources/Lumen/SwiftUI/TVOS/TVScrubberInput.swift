@@ -95,6 +95,12 @@ final class TVScrubberControl: UIControl, UIGestureRecognizerDelegate {
         super.didMoveToWindow()
         if window == nil {
             invalidateTimers()
+            if isEditingSession {
+                isEditingSession = false
+                Task { @MainActor [self] in
+                    notifyCancellation()
+                }
+            }
         }
     }
 
@@ -247,6 +253,10 @@ final class TVScrubberControl: UIControl, UIGestureRecognizerDelegate {
         isEditingSession = false
         stopArrowRepeat()
         cancelAutoCommit()
+        notifyCancellation()
+    }
+
+    private func notifyCancellation() {
         if let onCancel {
             onCancel()
         } else {
