@@ -36,4 +36,22 @@ class ProAVSeekRoutingTest: XCTestCase {
         XCTAssertEqual(ProAVPlayer.seekRoute(target: 3.5, startOffset: 0, closedSegmentsDuration: 4), .inner(3.5))
         XCTAssertEqual(ProAVPlayer.seekRoute(target: 4.5, startOffset: 0, closedSegmentsDuration: 4), .restart)
     }
+
+    @MainActor
+    func testInWindowSeekAbortsAPendingSwitchThatIsNotCommitting() {
+        XCTAssertEqual(ProAVPlayer.pendingSwitchSeekAction(route: .inner(5), innerSwitchCommitting: false), .abort)
+        XCTAssertEqual(ProAVPlayer.pendingSwitchSeekAction(route: .inner(0), innerSwitchCommitting: false), .abort)
+    }
+
+    @MainActor
+    func testRestartSeekAbortsThePendingSwitch() {
+        XCTAssertEqual(ProAVPlayer.pendingSwitchSeekAction(route: .restart, innerSwitchCommitting: false), .abort)
+        XCTAssertEqual(ProAVPlayer.pendingSwitchSeekAction(route: .restart, innerSwitchCommitting: true), .abort)
+    }
+
+    @MainActor
+    func testInWindowSeekWaitsForACommittingSwitch() {
+        XCTAssertEqual(ProAVPlayer.pendingSwitchSeekAction(route: .inner(5), innerSwitchCommitting: true), .deferUntilCommitted)
+        XCTAssertEqual(ProAVPlayer.pendingSwitchSeekAction(route: .inner(0), innerSwitchCommitting: true), .deferUntilCommitted)
+    }
 }
