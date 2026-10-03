@@ -165,10 +165,13 @@ extension KSVideoPlayer: UIViewRepresentable {
         private var audioSelectionGeneration = 0
         private var delayHide: DispatchWorkItem?
         private var isMaskPinned = false
+        private var hasHandledPlaybackEnd = false
         public var onPlay: ((TimeInterval, TimeInterval) -> Void)?
         public var onFinish: ((KSPlayerLayer, Error?) -> Void)?
         public var onStateChanged: ((KSPlayerLayer, KSPlayerState) -> Void)?
         public var onBufferChanged: ((Int, TimeInterval) -> Void)?
+        public var onPlaybackEnded: ((PlaybackEndReason) -> Void)?
+        public var onTrackSelection: ((TrackSelectionEvent) -> Void)?
         #if canImport(UIKit)
         fileprivate var onSwipe: ((UISwipeGestureRecognizer.Direction) -> Void)?
         private weak var swipeGestureView: UIView?
@@ -190,6 +193,10 @@ extension KSVideoPlayer: UIViewRepresentable {
         #endif
 
         public init() {}
+
+        private func resetPlaybackEndState() {
+            hasHandledPlaybackEnd = false
+        }
 
         private static func embeddedTrack(for info: any SubtitleInfo, in tracks: [MediaPlayerTrack]) -> MediaPlayerTrack? {
             if let track = info as? MediaPlayerTrack {
@@ -213,6 +220,19 @@ extension KSVideoPlayer: UIViewRepresentable {
                 }
             }
             return infos.first { $0.isEnabled }
+        }
+
+        private func subtitleLanguageCode(for info: any SubtitleInfo) -> String? {
+            if let track = info as? MediaPlayerTrack {
+                return TrackLanguagePreference.normalize(track.languageCode)
+            }
+            guard let player = playerLayer?.player,
+                  player.subtitleDataSouce?.infos.contains(where: { $0 === info }) == true
+            else {
+                return nil
+            }
+            let track = Self.embeddedTrack(for: info, in: player.tracks(mediaType: .subtitle))
+            return TrackLanguagePreference.normalize(track?.languageCode)
         }
 
         private func registerEmbeddedSubtitles(
@@ -247,12 +267,14 @@ extension KSVideoPlayer: UIViewRepresentable {
                 if playerLayer.url == url {
                     view = playerLayer.player.view ?? UIView()
                 } else {
+                    resetPlaybackEndState()
                     playerLayer.delegate = nil
                     playerLayer.set(url: url, options: options)
                     playerLayer.delegate = self
                     view = playerLayer.player.view ?? UIView()
                 }
             } else {
+                resetPlaybackEndState()
                 if lastPlayURL == url, lastPlayTime > 0 {
                     options.startPlayTime = lastPlayTime
                 }
@@ -271,6 +293,7 @@ extension KSVideoPlayer: UIViewRepresentable {
                 _ = makeView(url: url, options: options)
                 return
             }
+            resetPlaybackEndState()
             playerLayer.switchSource(url: url, options: options) { [weak self, weak playerLayer] success in
                 Task { @MainActor [weak self] in
                     guard let self,
@@ -312,6 +335,7 @@ extension KSVideoPlayer: UIViewRepresentable {
             delayHide?.cancel()
             delayHide = nil
             isMaskPinned = false
+            resetPlaybackEndState()
             state = .initialized
             isSeeking = false
             #if os(tvOS)
@@ -328,6 +352,7 @@ extension KSVideoPlayer: UIViewRepresentable {
 
         public func seek(time: TimeInterval, autoPlay: Bool? = nil) {
             guard let playerLayer else { return }
+            hasHandledPlaybackEnd = false
             seekGeneration &+= 1
             let generation = seekGeneration
             isSeeking = true
@@ -350,13 +375,15 @@ extension KSVideoPlayer: UIViewRepresentable {
             guard !track.isEnabled else { return }
             audioSelectionGeneration &+= 1
             let generation = audioSelectionGeneration
+            let event = TrackSelectionEvent(kind: .audio, languageCode: TrackLanguagePreference.normalize(track.languageCode))
             audioTrackSelectionState = .switching(trackID: track.trackID)
             guard let asyncPlayer = player as? AsyncAudioTrackSelecting else {
                 player.select(track: track)
                 audioTrackSelectionState = .idle
+                onTrackSelection?(event)
                 return
             }
-            asyncPlayer.selectAudioTrack(trackID: track.trackID) { [weak self, weak playerLayer] _ in
+            asyncPlayer.selectAudioTrack(trackID: track.trackID) { [weak self, weak playerLayer] result in
                 Task { @MainActor [weak self, weak playerLayer] in
                     guard let self,
                           let playerLayer,
@@ -366,8 +393,31 @@ extension KSVideoPlayer: UIViewRepresentable {
                         return
                     }
                     self.audioTrackSelectionState = .idle
+                    if result == .committed || result == .unchanged {
+                        self.onTrackSelection?(event)
+                    }
                 }
             }
+        }
+
+        public func selectSubtitle(_ info: (any SubtitleInfo)?) {
+            let languageCode = info.flatMap { subtitleLanguageCode(for: $0) }
+            subtitleModel.selectedSubtitleInfo = info
+            if let track = info as? MediaPlayerTrack {
+                playerLayer?.player.select(track: track)
+            }
+            onTrackSelection?(TrackSelectionEvent(kind: .subtitle, languageCode: languageCode, isOff: info == nil))
+        }
+
+        fileprivate func handlePlaybackEnd(layer: KSPlayerLayer, error: Error?) {
+            guard playerLayer === layer, !hasHandledPlaybackEnd else { return }
+            if let error {
+                hasHandledPlaybackEnd = true
+                onPlaybackEnded?(.failed(error))
+                return
+            }
+            hasHandledPlaybackEnd = true
+            onPlaybackEnded?(.completed)
         }
 
         @MainActor
@@ -454,6 +504,7 @@ extension KSVideoPlayer.Coordinator: KSPlayerLayerDelegate {
 
     public func player(layer: KSPlayerLayer, finish error: Error?) {
         onFinish?(layer, error)
+        handlePlaybackEnd(layer: layer, error: error)
     }
 
     public func player(layer _: KSPlayerLayer, bufferedCount: Int, consumeTime: TimeInterval) {

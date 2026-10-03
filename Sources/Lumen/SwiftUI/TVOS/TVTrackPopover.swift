@@ -53,7 +53,7 @@ struct TVTrackPopover: View {
     private var subtitleContent: some View {
         sectionHeader("Legendas")
         popoverRow(id: "off", label: "Desativadas", isSelected: subtitleModel.selectedSubtitleInfo == nil) {
-            subtitleModel.selectedSubtitleInfo = nil
+            config.selectSubtitle(nil)
         }
         if !subtitleModel.subtitleInfos.isEmpty {
             sectionHeader("Idioma")
@@ -64,10 +64,7 @@ struct TVTrackPopover: View {
                 popoverRow(id: info.subtitleID,
                            label: info.name,
                            isSelected: subtitleModel.selectedSubtitleInfo?.subtitleID == info.subtitleID) {
-                    subtitleModel.selectedSubtitleInfo = info
-                    if let track = info as? MediaPlayerTrack {
-                        config.playerLayer?.player.select(track: track)
-                    }
+                    config.selectSubtitle(info)
                 }
             }
         }
