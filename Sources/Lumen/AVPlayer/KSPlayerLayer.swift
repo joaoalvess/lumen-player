@@ -86,6 +86,7 @@ open class KSPlayerLayer: NSObject {
         let generation: Int
         let time: TimeInterval
         let autoPlay: Bool
+        var hasFailed = false
     }
 
     public weak var delegate: KSPlayerLayerDelegate?
@@ -204,6 +205,8 @@ open class KSPlayerLayer: NSObject {
     private var pendingSeekIntent: SeekIntent?
     private var activeSeekGeneration: Int?
     private var activeSeekCompletion: SeekCompletion?
+    private var seekabilityGraceGeneration: Int?
+    var seekabilityGracePeriod = TimeInterval(2)
     private var lastKnownPlaybackTime = TimeInterval(0)
     private var startTime: TimeInterval = 0
     private var sourceSwitchGeneration = 0
@@ -496,14 +499,53 @@ open class KSPlayerLayer: NSObject {
                 } else {
                     self.pause()
                 }
+            } else {
+                self.abandonPendingSeekIntent(keepsFallbackTarget: true)
             }
             completion.resolve(finished)
         }
     }
 
+    private var actionableSeekIntent: SeekIntent? {
+        guard let intent = pendingSeekIntent, !intent.hasFailed else { return nil }
+        return intent
+    }
+
     private func updatePendingSeekIntent(autoPlay: Bool) {
         guard let intent = pendingSeekIntent else { return }
-        pendingSeekIntent = SeekIntent(generation: intent.generation, time: intent.time, autoPlay: autoPlay)
+        pendingSeekIntent = SeekIntent(generation: intent.generation, time: intent.time, autoPlay: autoPlay, hasFailed: intent.hasFailed)
+    }
+
+    private func abandonPendingSeekIntent(keepsFallbackTarget: Bool = false) {
+        guard var intent = actionableSeekIntent else { return }
+        if keepsFallbackTarget {
+            intent.hasFailed = true
+            pendingSeekIntent = intent
+        } else {
+            pendingSeekIntent = nil
+        }
+        if intent.autoPlay {
+            play()
+        } else {
+            pause()
+        }
+    }
+
+    @MainActor
+    private func abandonPendingSeekIntentAfterSeekabilityGrace() {
+        guard let intent = actionableSeekIntent, seekabilityGraceGeneration != intent.generation else { return }
+        let generation = intent.generation
+        seekabilityGraceGeneration = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + seekabilityGracePeriod) { [weak self] in
+            guard let self, self.seekabilityGraceGeneration == generation else { return }
+            self.seekabilityGraceGeneration = nil
+            guard let intent = self.actionableSeekIntent, intent.generation == generation, self.player.isReadyToPlay else { return }
+            if self.player.seekable {
+                self.performSeek(intent, completion: SeekCompletion { _ in })
+            } else {
+                self.abandonPendingSeekIntent()
+            }
+        }
     }
 }
 
@@ -538,16 +580,13 @@ extension KSPlayerLayer: MediaPlayerDelegate {
         }
         #endif
         updateNowPlayingInfo()
-        if let intent = pendingSeekIntent {
+        if let intent = actionableSeekIntent {
             if player.seekable {
                 performSeek(intent, completion: SeekCompletion { _ in })
             } else if !player.duration.isFinite || player.duration <= 0 {
-                pendingSeekIntent = nil
-                if intent.autoPlay {
-                    play()
-                } else {
-                    pause()
-                }
+                abandonPendingSeekIntent()
+            } else if player.loadState == .playable {
+                abandonPendingSeekIntentAfterSeekabilityGrace()
             }
         } else if isAutoPlay {
             play()
@@ -556,9 +595,12 @@ extension KSPlayerLayer: MediaPlayerDelegate {
 
     public func changeLoadState(player: some MediaPlayerProtocol) {
         guard (self.player as AnyObject) === (player as AnyObject) else { return }
-        if player.isReadyToPlay, player.seekable, let intent = pendingSeekIntent {
+        if player.isReadyToPlay, player.seekable, let intent = actionableSeekIntent {
             performSeek(intent, completion: SeekCompletion { _ in })
             return
+        }
+        if player.isReadyToPlay, player.loadState == .playable, state == .readyToPlay {
+            abandonPendingSeekIntentAfterSeekabilityGrace()
         }
         guard player.playbackState != .seeking else { return }
         if player.loadState == .playable, startTime > 0 {
@@ -619,14 +661,12 @@ extension KSPlayerLayer: MediaPlayerDelegate {
                     (currentTime.isFinite && currentTime > 0) ? currentTime : lastKnownPlaybackTime
                 )
                 let fallbackAutoPlay = pendingSeekIntent?.autoPlay ?? isAutoPlay
-                if pendingSeekIntent == nil {
-                    seekGeneration &+= 1
-                    pendingSeekIntent = SeekIntent(
-                        generation: seekGeneration,
-                        time: max(fallbackTime, 0),
-                        autoPlay: fallbackAutoPlay
-                    )
-                }
+                seekGeneration &+= 1
+                pendingSeekIntent = SeekIntent(
+                    generation: seekGeneration,
+                    time: max(fallbackTime, 0),
+                    autoPlay: fallbackAutoPlay
+                )
                 activeSeekCompletion?.resolve(false)
                 activeSeekCompletion = nil
                 activeSeekGeneration = nil
@@ -638,6 +678,9 @@ extension KSPlayerLayer: MediaPlayerDelegate {
                         + "error: \(nsError.domain)(\(nsError.code)) \(nsError.localizedDescription), "
                         + "userInfo: \(nsError.userInfo)"
                 )
+                sourceSwitchGeneration += 1
+                pendingSourceSwitchURL = nil
+                resolvePendingSourceSwitchCompletions(false)
                 player.delegate = nil
                 player.shutdown()
                 isAutoPlay = false
