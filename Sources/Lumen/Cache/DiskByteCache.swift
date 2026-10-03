@@ -29,16 +29,17 @@ public final class DiskByteCache {
     static let indexPathExtension = "index"
     private static let indexFlushBytes = Int64(8 * 1024 * 1024)
     private let lock = NSLock()
+    private let persistLock = NSLock()
     private let directory: URL
     private let dataURL: URL
     private let indexURL: URL
     private let maxBytes: Int64
     private var descriptor = Int32(-1)
     private var ranges = [DiskByteCacheRange]()
-    private var logicalEnd = Int64(0)
     private var otherEntriesBytes = Int64(0)
     private var unsyncedBytes = Int64(0)
-    private var isWritable = true
+    private var indexGeneration = 0
+    private var persistedGeneration = 0
     private var storedContentLength: Int64?
     private var storedContentType: String?
 
@@ -70,13 +71,13 @@ public final class DiskByteCache {
         guard descriptor >= 0 else {
             return nil
         }
-        logicalEnd = ranges.map(\.end).max() ?? 0
+        let cachedBytes = DiskByteCache.storedBytes(in: ranges)
         let now = Date()
         try? FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: dataURL.path)
         try? FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: indexURL.path)
         otherEntriesBytes = DiskByteCache.usedBytes(in: directory, excluding: [dataURL, indexURL])
-        if otherEntriesBytes + logicalEnd > maxBytes {
-            evictOtherEntries(required: logicalEnd)
+        if otherEntriesBytes + cachedBytes > maxBytes {
+            evictOtherEntries(required: cachedBytes)
         }
     }
 
@@ -88,12 +89,14 @@ public final class DiskByteCache {
         }
         set {
             lock.lock()
-            defer { lock.unlock() }
             guard storedContentLength != newValue else {
+                lock.unlock()
                 return
             }
             storedContentLength = newValue
-            persistIndex()
+            let snapshot = makeIndexSnapshot()
+            lock.unlock()
+            persist(snapshot)
         }
     }
 
@@ -105,12 +108,14 @@ public final class DiskByteCache {
         }
         set {
             lock.lock()
-            defer { lock.unlock() }
             guard storedContentType != newValue else {
+                lock.unlock()
                 return
             }
             storedContentType = newValue
-            persistIndex()
+            let snapshot = makeIndexSnapshot()
+            lock.unlock()
+            persist(snapshot)
         }
     }
 
@@ -141,47 +146,21 @@ public final class DiskByteCache {
     }
 
     public func write(_ data: Data, at offset: Int64) {
-        guard offset >= 0, !data.isEmpty else {
+        guard offset >= 0, !data.isEmpty, let snapshot = store(data, at: offset) else {
             return
         }
-        lock.lock()
-        defer { lock.unlock() }
-        guard isWritable, descriptor >= 0 else {
-            return
-        }
-        let newEnd = offset + Int64(data.count)
-        let projectedEnd = max(logicalEnd, newEnd)
-        if otherEntriesBytes + projectedEnd > maxBytes {
-            evictOtherEntries(required: projectedEnd)
-            if otherEntriesBytes + projectedEnd > maxBytes {
-                isWritable = false
-                return
-            }
-        }
-        let written = data.withUnsafeBytes { pointer -> Int in
-            guard let base = pointer.baseAddress else {
-                return -1
-            }
-            return pwrite(descriptor, base, data.count, off_t(offset))
-        }
-        guard written == data.count else {
-            return
-        }
-        logicalEnd = projectedEnd
-        insert(DiskByteCacheRange(offset: offset, length: Int64(data.count)))
-        unsyncedBytes += Int64(data.count)
-        if unsyncedBytes >= DiskByteCache.indexFlushBytes {
-            persistIndex()
-        }
+        persist(snapshot)
     }
 
     public func close() {
+        persistLock.lock()
+        defer { persistLock.unlock() }
         lock.lock()
         defer { lock.unlock() }
         guard descriptor >= 0 else {
             return
         }
-        persistIndex()
+        _ = writeIndex(makeIndexSnapshot(), fileDescriptor: descriptor)
         Darwin.close(descriptor)
         descriptor = -1
     }
@@ -194,7 +173,38 @@ public final class DiskByteCache {
         SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func insert(_ range: DiskByteCacheRange) {
+    private func store(_ data: Data, at offset: Int64) -> IndexSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard descriptor >= 0 else {
+            return nil
+        }
+        let updatedRanges = DiskByteCache.inserting(DiskByteCacheRange(offset: offset, length: Int64(data.count)), into: ranges)
+        let projectedBytes = DiskByteCache.storedBytes(in: updatedRanges)
+        if projectedBytes <= maxBytes, otherEntriesBytes + projectedBytes > maxBytes {
+            evictOtherEntries(required: projectedBytes)
+        }
+        guard otherEntriesBytes + projectedBytes <= maxBytes else {
+            return nil
+        }
+        let written = data.withUnsafeBytes { pointer -> Int in
+            guard let base = pointer.baseAddress else {
+                return -1
+            }
+            return pwrite(descriptor, base, data.count, off_t(offset))
+        }
+        guard written == data.count else {
+            return nil
+        }
+        ranges = updatedRanges
+        unsyncedBytes += Int64(data.count)
+        guard unsyncedBytes >= DiskByteCache.indexFlushBytes else {
+            return nil
+        }
+        return makeIndexSnapshot()
+    }
+
+    private static func inserting(_ range: DiskByteCacheRange, into ranges: [DiskByteCacheRange]) -> [DiskByteCacheRange] {
         var all = ranges
         all.append(range)
         all.sort { $0.offset < $1.offset }
@@ -207,21 +217,51 @@ public final class DiskByteCache {
                 merged.append(current)
             }
         }
-        ranges = merged
+        return merged
     }
 
-    private func persistIndex() {
-        guard descriptor >= 0 else {
-            return
-        }
-        fsync(descriptor)
+    private static func storedBytes(in ranges: [DiskByteCacheRange]) -> Int64 {
+        ranges.reduce(Int64(0)) { $0 + $1.length }
+    }
+
+    private struct IndexSnapshot {
+        let generation: Int
+        let coveredBytes: Int64
+        let index: DiskByteCacheIndex
+    }
+
+    private func makeIndexSnapshot() -> IndexSnapshot {
+        indexGeneration += 1
         let index = DiskByteCacheIndex(version: DiskByteCache.indexVersion, contentLength: storedContentLength, contentType: storedContentType, ranges: ranges)
-        guard let encoded = try? JSONEncoder().encode(index) else {
+        return IndexSnapshot(generation: indexGeneration, coveredBytes: unsyncedBytes, index: index)
+    }
+
+    private func persist(_ snapshot: IndexSnapshot) {
+        persistLock.lock()
+        defer { persistLock.unlock() }
+        lock.lock()
+        let currentDescriptor = descriptor
+        lock.unlock()
+        guard currentDescriptor >= 0, writeIndex(snapshot, fileDescriptor: currentDescriptor) else {
             return
         }
-        if (try? encoded.write(to: indexURL, options: .atomic)) != nil {
-            unsyncedBytes = 0
+        lock.lock()
+        unsyncedBytes = max(0, unsyncedBytes - snapshot.coveredBytes)
+        lock.unlock()
+    }
+
+    private func writeIndex(_ snapshot: IndexSnapshot, fileDescriptor: Int32) -> Bool {
+        guard snapshot.generation > persistedGeneration else {
+            return false
         }
+        fsync(fileDescriptor)
+        guard let encoded = try? JSONEncoder().encode(snapshot.index),
+              (try? encoded.write(to: indexURL, options: .atomic)) != nil
+        else {
+            return false
+        }
+        persistedGeneration = snapshot.generation
+        return true
     }
 
     private func evictOtherEntries(required: Int64) {
@@ -249,14 +289,14 @@ public final class DiskByteCache {
     }
 
     private static func entries(in directory: URL) -> [Entry] {
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey]
         guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys) else {
             return []
         }
         return urls.filter { $0.pathExtension == dataPathExtension }.map { url in
             let values = try? url.resourceValues(forKeys: Set(keys))
             let indexURL = url.deletingPathExtension().appendingPathExtension(indexPathExtension)
-            let size = fileLength(at: url) + fileLength(at: indexURL)
+            let size = allocatedLength(at: url) + allocatedLength(at: indexURL)
             return Entry(dataURL: url, indexURL: indexURL, size: size, date: values?.contentModificationDate ?? .distantPast)
         }
     }
@@ -271,6 +311,11 @@ public final class DiskByteCache {
     private static func fileLength(at url: URL) -> Int64 {
         let values = try? url.resourceValues(forKeys: [.fileSizeKey])
         return Int64(values?.fileSize ?? 0)
+    }
+
+    private static func allocatedLength(at url: URL) -> Int64 {
+        let values = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])
+        return Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
     }
 
     private static func loadIndex(at url: URL) -> DiskByteCacheIndex? {
