@@ -40,6 +40,8 @@ public struct KSVideoPlayerView: View {
     private var tvActivePrompt: TVActivePrompt?
     @State
     private var tvDismissedSkips = Set<Int>()
+    @State
+    private var tvNeedsNowPlayingRefresh = false
     #endif
     private let requestedURL: URL
     @State
@@ -231,7 +233,17 @@ public struct KSVideoPlayerView: View {
                        let movieTitle = playerLayer.player.dynamicInfo?.metadata["title"] {
                         title = movieTitle
                     }
+                    #if os(tvOS)
+                    applyTVNowPlaying(on: playerLayer)
+                    tvNeedsNowPlayingRefresh = true
+                    #endif
                 }
+                #if os(tvOS)
+                if state == .bufferFinished, tvNeedsNowPlayingRefresh {
+                    tvNeedsNowPlayingRefresh = false
+                    applyTVNowPlaying(on: playerLayer)
+                }
+                #endif
             }
             .onFinish { _, error in
                 #if os(tvOS)
@@ -512,6 +524,13 @@ public struct KSVideoPlayerView: View {
         case nil:
             break
         }
+    }
+
+    private func applyTVNowPlaying(on playerLayer: KSPlayerLayer) {
+        let nowPlayingTitle: String? = usesEmbeddedTitle ? playerLayer.player.dynamicInfo?.metadata["title"] : title
+        playerLayer.setNowPlaying(title: nowPlayingTitle,
+                                  subtitle: tvMetadata.subtitle,
+                                  artworkURL: tvMetadata.artworkURL)
     }
 
     public func tvPlayerMetadata(_ metadata: TVPlayerMetadata) -> KSVideoPlayerView {
