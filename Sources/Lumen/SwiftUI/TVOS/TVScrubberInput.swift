@@ -12,6 +12,7 @@ struct TVScrubberInput: UIViewRepresentable {
     let value: Binding<Float>
     let bounds: ClosedRange<Float>
     var isFocusable = true
+    var isSeekEnabled = true
     let onEditingChanged: (Bool) -> Void
     var onCancel: (() -> Void)?
     var onDownArrow: (() -> Void)?
@@ -35,7 +36,8 @@ struct TVScrubberInput: UIViewRepresentable {
         control.onCancel = onCancel
         control.onDownArrow = onDownArrow
         control.onFocusChanged = onFocusChanged
-        control.canFocus = isFocusable
+        control.isUserInteractionEnabled = isSeekEnabled
+        control.canFocus = isFocusable && isSeekEnabled
     }
 }
 

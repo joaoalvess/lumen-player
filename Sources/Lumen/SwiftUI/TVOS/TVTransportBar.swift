@@ -33,13 +33,26 @@ struct TVTransportBar: View {
     private var isTimelineFocused = false
 
     var body: some View {
-        if config.playerLayer?.player.seekable ?? false {
-            timelineView
-        } else {
+        if showsLiveLabel {
             Text("Ao vivo")
                 .font(.system(size: 24, weight: .medium))
                 .foregroundStyle(.white.opacity(0.8))
+        } else {
+            timelineView
         }
+    }
+
+    private var canSeek: Bool {
+        config.playerLayer?.player.seekable ?? false
+    }
+
+    private var showsLiveLabel: Bool {
+        guard let player = config.playerLayer?.player else { return false }
+        return TVScrubberTuning.showsLiveLabel(
+            isReadyToPlay: player.isReadyToPlay,
+            isSeekable: player.seekable,
+            duration: player.duration
+        )
     }
 
     private var progressFraction: CGFloat {
@@ -113,6 +126,7 @@ struct TVTransportBar: View {
                 },
                 bounds: 0 ... Float(max(1, model.totalTime)),
                 isFocusable: isFocusable,
+                isSeekEnabled: canSeek,
                 onEditingChanged: { editing in
                     editing ? beginScrubIfNeeded() : commitScrub()
                 },
@@ -224,7 +238,7 @@ struct TVTransportBar: View {
     }
 
     private func beginScrubIfNeeded() {
-        guard !isScrubbing else { return }
+        guard canSeek, !isScrubbing else { return }
         isScrubbing = true
         scrubAnchorTime = model.currentTime
         wasPlayingBeforeScrub = config.state.isPlaying
@@ -240,6 +254,11 @@ struct TVTransportBar: View {
     private func commitScrub() {
         guard isScrubbing else { return }
         isScrubbing = false
+        guard canSeek else {
+            model.currentTime = scrubAnchorTime
+            config.mask(show: true)
+            return
+        }
         config.seek(time: TimeInterval(model.currentTime), autoPlay: wasPlayingBeforeScrub)
         config.mask(show: true)
     }

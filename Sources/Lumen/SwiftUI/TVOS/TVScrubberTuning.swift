@@ -11,6 +11,10 @@ enum TVScrubberTuning {
     static let repeatInterval: TimeInterval = 0.22
     static let autoCommitDelay: TimeInterval = 1
 
+    static func showsLiveLabel(isReadyToPlay: Bool, isSeekable: Bool, duration: TimeInterval) -> Bool {
+        isReadyToPlay && !isSeekable && (!duration.isFinite || duration <= 0)
+    }
+
     static func panDelta(
         points: CGFloat,
         trackWidth: CGFloat,

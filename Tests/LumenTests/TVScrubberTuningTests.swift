@@ -2,6 +2,14 @@
 import XCTest
 
 final class TVScrubberTuningTests: XCTestCase {
+    func testLiveLabelRequiresAReadyNonSeekableIndefinitePlayer() {
+        XCTAssertFalse(TVScrubberTuning.showsLiveLabel(isReadyToPlay: false, isSeekable: false, duration: 0))
+        XCTAssertFalse(TVScrubberTuning.showsLiveLabel(isReadyToPlay: true, isSeekable: false, duration: 7_200))
+        XCTAssertFalse(TVScrubberTuning.showsLiveLabel(isReadyToPlay: true, isSeekable: true, duration: 0))
+        XCTAssertTrue(TVScrubberTuning.showsLiveLabel(isReadyToPlay: true, isSeekable: false, duration: 0))
+        XCTAssertTrue(TVScrubberTuning.showsLiveLabel(isReadyToPlay: true, isSeekable: false, duration: .nan))
+    }
+
     func testSlowMovementProvidesFinePrecisionForFeatureLengthContent() {
         let duration: TimeInterval = 2 * 60 * 60
         let delta = TVScrubberTuning.panDelta(
