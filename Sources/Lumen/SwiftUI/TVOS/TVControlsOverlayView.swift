@@ -52,6 +52,8 @@ struct TVControlsOverlayView: View {
     private var focusedTab: TVPanelTab?
     @State
     private var isScrubbing = false
+    @State
+    private var hasAudioTracks = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -115,10 +117,17 @@ struct TVControlsOverlayView: View {
         }
         .onAppear {
             focusInitialTabIfNeeded()
+            refreshAudioTracks()
         }
         .onChange(of: focusableField.wrappedValue) { field in
             guard field == .pills else { return }
             focusInitialTabIfNeeded()
+        }
+        .onChange(of: config.state) { _ in
+            refreshAudioTracks()
+        }
+        .onChange(of: config.playerLayer?.url) { _ in
+            refreshAudioTracks()
         }
     }
 
@@ -142,7 +151,7 @@ struct TVControlsOverlayView: View {
         TVGlassGroup {
             HStack(spacing: 20) {
                 chipButton(kind: .subtitles, systemName: "captions.bubble")
-                if let audioTracks = config.playerLayer?.player.tracks(mediaType: .audio), !audioTracks.isEmpty {
+                if hasAudioTracks {
                     chipButton(kind: .audio, systemName: "waveform")
                 }
                 if config.playerLayer?.player.pipController != nil {
@@ -197,7 +206,7 @@ struct TVControlsOverlayView: View {
     }
 
     private var availableTabs: [TVPanelTab] {
-        [.info, .cast, .continueWatching, .advanced]
+        [.info, .cast, .advanced]
     }
 
     private var scrim: some View {
@@ -256,6 +265,11 @@ struct TVControlsOverlayView: View {
     private func focusInitialTabIfNeeded() {
         guard focusableField.wrappedValue == .pills else { return }
         focusedTab = mode.activePanelTab ?? .info
+    }
+
+    private func refreshAudioTracks() {
+        let audioTracks = config.playerLayer?.player.tracks(mediaType: .audio) ?? []
+        hasAudioTracks = !audioTracks.isEmpty
     }
 
 }
