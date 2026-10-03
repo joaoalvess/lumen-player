@@ -23,6 +23,11 @@ struct TVTrackPopover: View {
                 subtitleContent
             case .audio:
                 audioContent
+            case .sources:
+                sectionHeader("Fontes")
+                TVSourcesContent(provider: config.tvFeatures.sources, focusedRow: $focusedRow) {
+                    closePopover()
+                }
             }
         }
         .padding(20)
@@ -46,7 +51,13 @@ struct TVTrackPopover: View {
                 return String(enabled.trackID)
             }
             return "off"
+        case .sources:
+            return TVSourcesContent.loadingRowID
         }
+    }
+
+    private var supportsPlaybackRate: Bool {
+        config.playerLayer?.player.supportsPlaybackRate ?? false
     }
 
     @ViewBuilder
@@ -68,14 +79,25 @@ struct TVTrackPopover: View {
                 }
             }
         }
+        if subtitleModel.selectedSubtitleInfo != nil {
+            Divider()
+                .overlay(.white.opacity(0.14))
+                .padding(.horizontal, 28)
+            sectionHeader("Atraso")
+                .padding(.top, 4)
+            subtitleDelayRow
+        }
     }
 
     @ViewBuilder
     private var audioContent: some View {
-        sectionHeader("Ajustes de áudio")
-        Divider()
-            .overlay(.white.opacity(0.14))
-            .padding(.horizontal, 28)
+        if supportsPlaybackRate {
+            sectionHeader("Velocidade")
+            playbackRateRow
+            Divider()
+                .overlay(.white.opacity(0.14))
+                .padding(.horizontal, 28)
+        }
         sectionHeader("Faixa de áudio")
             .padding(.top, 4)
         let pendingTrackID = config.audioTrackSelectionState.pendingTrackID
@@ -90,6 +112,52 @@ struct TVTrackPopover: View {
                 }
             }
         }
+    }
+
+    private var playbackRateRow: some View {
+        HStack(spacing: 8) {
+            ForEach(TVPlaybackRate.steps, id: \.self) { rate in
+                Button {
+                    config.playbackRate = rate
+                } label: {
+                    Text(TVPlaybackRate.label(rate))
+                }
+                .buttonStyle(TVStepButtonStyle(isActive: TVPlaybackRate.isSelected(rate, current: config.playbackRate)))
+                .focused($focusedRow, equals: "rate.\(rate)")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private var subtitleDelayRow: some View {
+        HStack(spacing: 8) {
+            delayStepButton(-0.5)
+            delayStepButton(-0.1)
+            Text(TVSubtitleDelay.label(subtitleModel.subtitleDelay))
+                .font(.system(size: 26, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+            delayStepButton(0.1)
+            delayStepButton(0.5)
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func delayStepButton(_ step: TimeInterval) -> some View {
+        Button {
+            subtitleModel.subtitleDelay = TVSubtitleDelay.adjusted(subtitleModel.subtitleDelay, by: step)
+        } label: {
+            Text(TVSubtitleDelay.stepLabel(step))
+        }
+        .buttonStyle(TVStepButtonStyle())
+        .focused($focusedRow, equals: "delay.\(step)")
+    }
+
+    private func closePopover() {
+        config.mask(show: false)
     }
 
     private func sectionHeader(_ text: String) -> some View {
@@ -144,6 +212,40 @@ struct TVTrackPopover: View {
         }
         .disabled(isDisabled)
         .focused($focusedRow, equals: id)
+    }
+}
+
+@available(tvOS 16.0, *)
+private struct TVStepButtonStyle: ButtonStyle {
+    var isActive = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        Step(configuration: configuration, isActive: isActive)
+    }
+
+    private struct Step: View {
+        @Environment(\.isFocused)
+        private var isFocused
+        let configuration: Configuration
+        let isActive: Bool
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 26, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .foregroundStyle(isFocused ? AnyShapeStyle(.black) : AnyShapeStyle(.white))
+                .padding(.horizontal, 14)
+                .frame(height: 56)
+                .background {
+                    Capsule()
+                        .fill(.white)
+                        .opacity(isFocused ? 1 : (isActive ? 0.3 : 0.1))
+                }
+                .scaleEffect(configuration.isPressed ? 0.97 : (isFocused ? 1.04 : 1))
+                .animation(TVPlayerMotion.focus, value: isFocused)
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        }
     }
 }
 #endif

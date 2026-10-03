@@ -58,12 +58,39 @@ public struct TVSkipSegment: Equatable, Sendable {
     }
 }
 
+public struct TVSourceOption: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var title: String
+    public var subtitle: String?
+    public var isSelected: Bool
+
+    public init(id: String, title: String, subtitle: String? = nil, isSelected: Bool = false) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.isSelected = isSelected
+    }
+}
+
+public struct TVSourcesProvider {
+    public var load: @MainActor () async throws -> [TVSourceOption]
+    public var onSelect: @MainActor (TVSourceOption) -> Void
+
+    public init(load: @escaping @MainActor () async throws -> [TVSourceOption],
+                onSelect: @escaping @MainActor (TVSourceOption) -> Void) {
+        self.load = load
+        self.onSelect = onSelect
+    }
+}
+
 @MainActor
 public final class TVPlayerFeatures {
     @Published
     public var upNext: TVUpNext?
     @Published
     public var skipSegments: [TVSkipSegment] = []
+    @Published
+    public var sources: TVSourcesProvider?
 
     public init() {}
 }

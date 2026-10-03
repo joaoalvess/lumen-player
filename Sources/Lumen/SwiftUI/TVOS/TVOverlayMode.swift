@@ -8,6 +8,7 @@ import Foundation
 enum TVTrackPopoverKind: Hashable {
     case subtitles
     case audio
+    case sources
 }
 
 enum TVPanelTab: Hashable {
