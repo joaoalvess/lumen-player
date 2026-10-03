@@ -65,6 +65,29 @@ public protocol KSPlayerLayerDelegate: AnyObject {
 }
 
 open class KSPlayerLayer: NSObject {
+    private final class SeekCompletion {
+        private let lock = NSLock()
+        private var handler: ((Bool) -> Void)?
+
+        init(_ handler: @escaping (Bool) -> Void) {
+            self.handler = handler
+        }
+
+        func resolve(_ result: Bool) {
+            lock.lock()
+            let handler = handler
+            self.handler = nil
+            lock.unlock()
+            handler?(result)
+        }
+    }
+
+    private struct SeekIntent {
+        let generation: Int
+        let time: TimeInterval
+        let autoPlay: Bool
+    }
+
     public weak var delegate: KSPlayerLayerDelegate?
     @Published
     public var bufferingProgress: Int = 0
@@ -177,7 +200,11 @@ open class KSPlayerLayer: NSObject {
     private var isAutoPlay: Bool
     private var isWirelessRouteActive = false
     private var bufferedCount = 0
-    private var shouldSeekTo: TimeInterval = 0
+    private var seekGeneration = 0
+    private var pendingSeekIntent: SeekIntent?
+    private var activeSeekGeneration: Int?
+    private var activeSeekCompletion: SeekCompletion?
+    private var lastKnownPlaybackTime = TimeInterval(0)
     private var startTime: TimeInterval = 0
     private var sourceSwitchGeneration = 0
     private var isCommittingSourceSwitch = false
@@ -333,13 +360,21 @@ open class KSPlayerLayer: NSObject {
                 guard let self, self.player.isReadyToPlay else {
                     return
                 }
-                self.delegate?.player(layer: self, currentTime: self.player.currentPlaybackTime, totalTime: self.player.duration)
+                let currentTime = self.player.currentPlaybackTime
+                if currentTime.isFinite, currentTime >= 0 {
+                    self.lastKnownPlaybackTime = currentTime
+                }
+                self.delegate?.player(
+                    layer: self,
+                    currentTime: currentTime,
+                    totalTime: self.player.duration
+                )
                 if self.player.playbackState == .playing, self.player.loadState == .playable, self.state == .buffering {
                     // 一个兜底保护，正常不能走到这里
                     self.state = .bufferFinished
                 }
                 if self.player.isPlaying {
-                    MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.player.currentPlaybackTime
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
                 }
             }
         }
@@ -351,6 +386,7 @@ open class KSPlayerLayer: NSObject {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         isAutoPlay = true
+        updatePendingSeekIntent(autoPlay: true)
         if state == .error || state == .initialized {
             prepareToPlay()
         }
@@ -376,6 +412,7 @@ open class KSPlayerLayer: NSObject {
 
     open func pause() {
         isAutoPlay = false
+        updatePendingSeekIntent(autoPlay: false)
         player.pause()
         timer?.fireDate = Date.distantFuture
         state = .paused
@@ -389,9 +426,16 @@ open class KSPlayerLayer: NSObject {
         KSLog("stop Player")
         cancelPendingSourceSwitch()
         state = .initialized
+        seekGeneration &+= 1
+        pendingSeekIntent = nil
+        activeSeekCompletion?.resolve(false)
+        activeSeekCompletion = nil
+        activeSeekGeneration = nil
+        lastKnownPlaybackTime = 0
+        player.delegate = nil
         player.shutdown()
+        player.delegate = self
         bufferedCount = 0
-        shouldSeekTo = 0
         player.playbackRate = 1
         player.playbackVolume = 1
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -403,20 +447,63 @@ open class KSPlayerLayer: NSObject {
     open func seek(time: TimeInterval, autoPlay: Bool, completion: @escaping ((Bool) -> Void)) {
         if time.isInfinite || time.isNaN {
             completion(false)
+            return
         }
+        activeSeekCompletion?.resolve(false)
+        activeSeekCompletion = nil
+        activeSeekGeneration = nil
+        seekGeneration &+= 1
+        let intent = SeekIntent(generation: seekGeneration, time: max(time, 0), autoPlay: autoPlay)
+        pendingSeekIntent = intent
+        isAutoPlay = autoPlay
         if player.isReadyToPlay, player.seekable {
-            player.seek(time: time) { [weak self] finished in
-                guard let self else { return }
-                if finished, autoPlay {
-                    self.play()
-                }
-                completion(finished)
-            }
+            performSeek(intent, completion: SeekCompletion(completion))
         } else {
-            isAutoPlay = autoPlay
-            shouldSeekTo = time
             completion(false)
         }
+    }
+
+    private func performSeek(_ intent: SeekIntent, completion: SeekCompletion) {
+        guard activeSeekGeneration != intent.generation else {
+            completion.resolve(false)
+            return
+        }
+        let seekingPlayer = player
+        activeSeekGeneration = intent.generation
+        activeSeekCompletion = completion
+        seekingPlayer.seek(time: intent.time) { [weak self, weak seekingPlayer] finished in
+            guard let self else {
+                completion.resolve(false)
+                return
+            }
+            if self.activeSeekGeneration == intent.generation {
+                self.activeSeekGeneration = nil
+                self.activeSeekCompletion = nil
+            }
+            guard let seekingPlayer,
+                  (self.player as AnyObject) === (seekingPlayer as AnyObject),
+                  self.pendingSeekIntent?.generation == intent.generation
+            else {
+                completion.resolve(false)
+                return
+            }
+            if finished {
+                self.lastKnownPlaybackTime = intent.time
+                let autoPlay = self.pendingSeekIntent?.autoPlay ?? intent.autoPlay
+                self.pendingSeekIntent = nil
+                if autoPlay {
+                    self.play()
+                } else {
+                    self.pause()
+                }
+            }
+            completion.resolve(finished)
+        }
+    }
+
+    private func updatePendingSeekIntent(autoPlay: Bool) {
+        guard let intent = pendingSeekIntent else { return }
+        pendingSeekIntent = SeekIntent(generation: intent.generation, time: intent.time, autoPlay: autoPlay)
     }
 }
 
@@ -424,6 +511,7 @@ open class KSPlayerLayer: NSObject {
 
 extension KSPlayerLayer: MediaPlayerDelegate {
     public func readyToPlay(player: some MediaPlayerProtocol) {
+        guard (self.player as AnyObject) === (player as AnyObject) else { return }
         state = .readyToPlay
         #if os(macOS)
         runOnMainThread { [weak self] in
@@ -450,20 +538,28 @@ extension KSPlayerLayer: MediaPlayerDelegate {
         }
         #endif
         updateNowPlayingInfo()
-        if isAutoPlay {
-            if shouldSeekTo > 0 {
-                seek(time: shouldSeekTo, autoPlay: true) { [weak self] _ in
-                    guard let self else { return }
-                    self.shouldSeekTo = 0
+        if let intent = pendingSeekIntent {
+            if player.seekable {
+                performSeek(intent, completion: SeekCompletion { _ in })
+            } else if !player.duration.isFinite || player.duration <= 0 {
+                pendingSeekIntent = nil
+                if intent.autoPlay {
+                    play()
+                } else {
+                    pause()
                 }
-
-            } else {
-                play()
             }
+        } else if isAutoPlay {
+            play()
         }
     }
 
     public func changeLoadState(player: some MediaPlayerProtocol) {
+        guard (self.player as AnyObject) === (player as AnyObject) else { return }
+        if player.isReadyToPlay, player.seekable, let intent = pendingSeekIntent {
+            performSeek(intent, completion: SeekCompletion { _ in })
+            return
+        }
         guard player.playbackState != .seeking else { return }
         if player.loadState == .playable, startTime > 0 {
             let diff = CACurrentMediaTime() - startTime
@@ -504,19 +600,50 @@ extension KSPlayerLayer: MediaPlayerDelegate {
         }
     }
 
-    public func changeBuffering(player _: some MediaPlayerProtocol, progress: Int) {
+    public func changeBuffering(player: some MediaPlayerProtocol, progress: Int) {
+        guard (self.player as AnyObject) === (player as AnyObject) else { return }
         bufferingProgress = progress
     }
 
-    public func playBack(player _: some MediaPlayerProtocol, loopCount: Int) {
+    public func playBack(player: some MediaPlayerProtocol, loopCount: Int) {
+        guard (self.player as AnyObject) === (player as AnyObject) else { return }
         self.loopCount = loopCount
     }
 
     public func finish(player: some MediaPlayerProtocol, error: Error?) {
+        guard (self.player as AnyObject) === (player as AnyObject) else { return }
         if let error {
             if type(of: player) != KSOptions.secondPlayerType, let secondPlayerType = KSOptions.secondPlayerType {
+                let currentTime = player.currentPlaybackTime
+                let fallbackTime = pendingSeekIntent?.time ?? (
+                    (currentTime.isFinite && currentTime > 0) ? currentTime : lastKnownPlaybackTime
+                )
+                let fallbackAutoPlay = pendingSeekIntent?.autoPlay ?? isAutoPlay
+                if pendingSeekIntent == nil {
+                    seekGeneration &+= 1
+                    pendingSeekIntent = SeekIntent(
+                        generation: seekGeneration,
+                        time: max(fallbackTime, 0),
+                        autoPlay: fallbackAutoPlay
+                    )
+                }
+                activeSeekCompletion?.resolve(false)
+                activeSeekCompletion = nil
+                activeSeekGeneration = nil
+                timer?.fireDate = Date.distantFuture
+                let nsError = error as NSError
+                KSLog(
+                    "player fallback from \(type(of: player)) to \(secondPlayerType), "
+                        + "state: \(state), time: \(fallbackTime), autoPlay: \(fallbackAutoPlay), "
+                        + "error: \(nsError.domain)(\(nsError.code)) \(nsError.localizedDescription), "
+                        + "userInfo: \(nsError.userInfo)"
+                )
+                player.delegate = nil
                 player.shutdown()
+                isAutoPlay = false
                 self.player = secondPlayerType.init(url: url, options: options)
+                isAutoPlay = fallbackAutoPlay
+                prepareToPlay()
                 return
             }
             state = .error
