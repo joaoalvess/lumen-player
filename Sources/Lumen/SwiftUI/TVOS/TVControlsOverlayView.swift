@@ -40,6 +40,8 @@ struct TVControlsOverlayView: View {
     var subtitleModel: SubtitleModel
     @ObservedObject
     var timemodel: ControllerTimeModel
+    @ObservedObject
+    var features: TVPlayerFeatures
     let title: String
     let metadata: TVPlayerMetadata
     @Binding
@@ -206,7 +208,12 @@ struct TVControlsOverlayView: View {
     }
 
     private var availableTabs: [TVPanelTab] {
-        [.info, .cast, .advanced]
+        var tabs: [TVPanelTab] = [.info, .cast]
+        if features.upNext != nil {
+            tabs.append(.continueWatching)
+        }
+        tabs.append(.advanced)
+        return tabs
     }
 
     private var scrim: some View {

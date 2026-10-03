@@ -5,6 +5,7 @@
 //  Created by kintan on 2023/2/11.
 //
 
+import Combine
 import Foundation
 import SwiftUI
 
@@ -104,6 +105,11 @@ extension KSVideoPlayer: UIViewRepresentable {
         @Published
         private(set) var audioTrackSelectionState = AudioTrackSelectionState.idle
 
+        #if os(tvOS)
+        @Published
+        public private(set) var isUpNextDismissed = false
+        #endif
+
         @Published
         public var isMuted: Bool = false {
             didSet {
@@ -172,6 +178,10 @@ extension KSVideoPlayer: UIViewRepresentable {
         public var onBufferChanged: ((Int, TimeInterval) -> Void)?
         public var onPlaybackEnded: ((PlaybackEndReason) -> Void)?
         public var onTrackSelection: ((TrackSelectionEvent) -> Void)?
+        #if os(tvOS)
+        public let tvFeatures = TVPlayerFeatures()
+        private var upNextObservation: AnyCancellable?
+        #endif
         #if canImport(UIKit)
         fileprivate var onSwipe: ((UISwipeGestureRecognizer.Direction) -> Void)?
         private weak var swipeGestureView: UIView?
@@ -192,10 +202,25 @@ extension KSVideoPlayer: UIViewRepresentable {
         }
         #endif
 
-        public init() {}
+        public init() {
+            #if os(tvOS)
+            upNextObservation = tvFeatures.$upNext
+                .compactMap { $0?.item }
+                .removeDuplicates()
+                .sink { [weak self] _ in
+                    guard let self, self.isUpNextDismissed else { return }
+                    self.isUpNextDismissed = false
+                }
+            #endif
+        }
 
         private func resetPlaybackEndState() {
             hasHandledPlaybackEnd = false
+            #if os(tvOS)
+            if isUpNextDismissed {
+                isUpNextDismissed = false
+            }
+            #endif
         }
 
         private static func embeddedTrack(for info: any SubtitleInfo, in tracks: [MediaPlayerTrack]) -> MediaPlayerTrack? {
@@ -409,6 +434,20 @@ extension KSVideoPlayer: UIViewRepresentable {
             onTrackSelection?(TrackSelectionEvent(kind: .subtitle, languageCode: languageCode, isOff: info == nil))
         }
 
+        #if os(tvOS)
+        public func dismissUpNext() {
+            guard !isUpNextDismissed else { return }
+            isUpNextDismissed = true
+            tvFeatures.upNext?.onDismiss?()
+        }
+
+        public func playUpNextNow() {
+            guard !hasHandledPlaybackEnd, let upNext = tvFeatures.upNext else { return }
+            hasHandledPlaybackEnd = true
+            upNext.onPlayNext()
+        }
+        #endif
+
         fileprivate func handlePlaybackEnd(layer: KSPlayerLayer, error: Error?) {
             guard playerLayer === layer, !hasHandledPlaybackEnd else { return }
             if let error {
@@ -416,6 +455,12 @@ extension KSVideoPlayer: UIViewRepresentable {
                 onPlaybackEnded?(.failed(error))
                 return
             }
+            #if os(tvOS)
+            if tvFeatures.upNext != nil, !isUpNextDismissed {
+                playUpNextNow()
+                return
+            }
+            #endif
             hasHandledPlaybackEnd = true
             onPlaybackEnded?(.completed)
         }

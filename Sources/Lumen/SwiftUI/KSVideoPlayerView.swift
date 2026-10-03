@@ -36,6 +36,10 @@ public struct KSVideoPlayerView: View {
     private var tvSkipHint: TVSkipHint?
     @State
     private var tvIsInitialLoading = true
+    @State
+    private var tvActivePrompt: TVActivePrompt?
+    @State
+    private var tvDismissedSkips = Set<Int>()
     #endif
     private let requestedURL: URL
     @State
@@ -139,6 +143,7 @@ public struct KSVideoPlayerView: View {
                 #endif
             }
             #if os(tvOS)
+            tvPromptLayer
             if tvIsInitialLoading, playbackError == nil {
                 ZStack {
                     Color.black
@@ -181,6 +186,8 @@ public struct KSVideoPlayerView: View {
             .onExitCommand {
                 if tvIsInitialLoading {
                     close()
+                } else if tvActivePrompt != nil {
+                    dismissTVPrompt()
                 } else if tvOverlayMode != .transport {
                     showTransportAndFocusTimeline()
                 } else if playerCoordinator.isMaskShow {
@@ -189,6 +196,12 @@ public struct KSVideoPlayerView: View {
                 } else {
                     close()
                 }
+            }
+            .onChange(of: tvActivePrompt) { _ in
+                refreshTVIdleFocus()
+            }
+            .onChange(of: url) { _ in
+                tvDismissedSkips = []
             }
         #endif
     }
@@ -262,7 +275,7 @@ public struct KSVideoPlayerView: View {
             .navigationBarTitleDisplayMode(.inline)
         #endif
         #if os(tvOS)
-            .focusable(!playerCoordinator.isMaskShow || tvIsInitialLoading)
+            .focusable((!playerCoordinator.isMaskShow && tvActivePrompt == nil) || tvIsInitialLoading)
         .focused($focusableField, equals: .play)
         #elseif !os(iOS)
             .focusable(!playerCoordinator.isMaskShow)
@@ -328,19 +341,7 @@ public struct KSVideoPlayerView: View {
         #endif
         #if os(tvOS)
             .onMoveCommand { direction in
-            switch direction {
-            case .left:
-                tvSkip(-KSOptions.tvSkipInterval)
-            case .right:
-                tvSkip(KSOptions.tvSkipInterval)
-            case .up:
-                showTransportAndFocusTimeline(autoHide: false)
-            case .down:
-                playerCoordinator.mask(show: true, autoHide: false)
-                focusableField = .pills
-            @unknown default:
-                break
-            }
+            tvMove(direction)
         }
         #else
         .onHover { _ in
@@ -365,6 +366,7 @@ public struct KSVideoPlayerView: View {
                 TVControlsOverlayView(config: playerCoordinator,
                                       subtitleModel: playerCoordinator.subtitleModel,
                                       timemodel: playerCoordinator.timemodel,
+                                      features: playerCoordinator.tvFeatures,
                                       title: title,
                                       metadata: tvMetadata,
                                       mode: $tvOverlayMode,
@@ -379,7 +381,7 @@ public struct KSVideoPlayerView: View {
                     }
                     .onDisappear {
                         tvOverlayMode = .transport
-                        focusableField = .play
+                        focusableField = tvActivePrompt == nil ? .play : .prompt
                     }
             }
         }
@@ -447,6 +449,71 @@ public struct KSVideoPlayerView: View {
         tvSkipHint = TVSkipHint(seconds: seconds)
     }
 
+    private func tvMove(_ direction: MoveCommandDirection) {
+        switch direction {
+        case .left:
+            tvSkip(-KSOptions.tvSkipInterval)
+        case .right:
+            tvSkip(KSOptions.tvSkipInterval)
+        case .up:
+            showTransportAndFocusTimeline(autoHide: false)
+        case .down:
+            playerCoordinator.mask(show: true, autoHide: false)
+            focusableField = .pills
+        @unknown default:
+            break
+        }
+    }
+
+    private var tvPromptLayer: some View {
+        TVPromptLayer(config: playerCoordinator,
+                      features: playerCoordinator.tvFeatures,
+                      timemodel: playerCoordinator.timemodel,
+                      isPresented: !playerCoordinator.isMaskShow && !tvIsInitialLoading && playbackError == nil,
+                      dismissedSkips: $tvDismissedSkips,
+                      activePrompt: $tvActivePrompt)
+            .focused($focusableField, equals: .prompt)
+            .onMoveCommand { direction in
+                tvMove(direction)
+            }
+            .padding(.trailing, TVPlayerMetrics.edgeHorizontal)
+            .padding(.bottom, TVPlayerMetrics.edgeBottom)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .ignoresSafeArea()
+    }
+
+    private var tvIdleFocusTarget: FocusableField? {
+        if tvActivePrompt != nil {
+            return .prompt
+        }
+        if !playerCoordinator.isMaskShow {
+            return .play
+        }
+        return nil
+    }
+
+    private func refreshTVIdleFocus() {
+        guard let target = tvIdleFocusTarget else { return }
+        focusableField = target
+        Task { @MainActor in
+            await Task.yield()
+            if let target = tvIdleFocusTarget {
+                focusableField = target
+            }
+        }
+    }
+
+    private func dismissTVPrompt() {
+        switch tvActivePrompt {
+        case .upNext?:
+            playerCoordinator.dismissUpNext()
+        case let .skip(index, _)?:
+            tvDismissedSkips.insert(index)
+        case nil:
+            break
+        }
+    }
+
     public func tvPlayerMetadata(_ metadata: TVPlayerMetadata) -> KSVideoPlayerView {
         var view = self
         view.tvMetadata = metadata
@@ -485,7 +552,7 @@ public struct KSVideoPlayerView: View {
     }
 
     enum FocusableField {
-        case play, controller, timeline, pills, popover, panel
+        case play, controller, timeline, pills, popover, panel, prompt
     }
 
     public func openURL(_ url: URL) {
