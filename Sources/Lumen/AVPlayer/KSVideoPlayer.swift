@@ -191,6 +191,30 @@ extension KSVideoPlayer: UIViewRepresentable {
 
         public init() {}
 
+        private static func embeddedTrack(for info: any SubtitleInfo, in tracks: [MediaPlayerTrack]) -> MediaPlayerTrack? {
+            if let track = info as? MediaPlayerTrack {
+                return track
+            }
+            guard let trackID = Int32(info.subtitleID) else { return nil }
+            return tracks.first { $0.trackID == trackID }
+        }
+
+        private func initialSubtitle(from infos: [any SubtitleInfo], layer: KSPlayerLayer) -> (any SubtitleInfo)? {
+            let options = layer.options
+            guard options.subtitlesEnabledByDefault else { return nil }
+            if !options.preferredSubtitleLanguages.isEmpty {
+                let tracks = layer.player.tracks(mediaType: .subtitle)
+                let candidates = infos.map { info -> TrackLanguagePreference.Candidate in
+                    let track = Self.embeddedTrack(for: info, in: tracks)
+                    return TrackLanguagePreference.Candidate(languageCode: track?.languageCode, isImageBased: track?.isImageSubtitle ?? false)
+                }
+                if let index = TrackLanguagePreference.pickIndex(preferred: options.preferredSubtitleLanguages, candidates: candidates) {
+                    return infos[index]
+                }
+            }
+            return infos.first { $0.isEnabled }
+        }
+
         private func registerEmbeddedSubtitles(
             from layer: KSPlayerLayer,
             expectedURL: URL
@@ -207,7 +231,7 @@ extension KSVideoPlayer: UIViewRepresentable {
                 }
                 subtitleDataSouce.infos.forEach { self.subtitleModel.addSubtitle(info: $0) }
                 if self.subtitleModel.selectedSubtitleInfo == nil, layer.options.autoSelectEmbedSubtitle {
-                    self.subtitleModel.selectedSubtitleInfo = subtitleDataSouce.infos.first { $0.isEnabled }
+                    self.subtitleModel.selectedSubtitleInfo = self.initialSubtitle(from: subtitleDataSouce.infos, layer: layer)
                 }
             }
         }

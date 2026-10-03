@@ -453,7 +453,14 @@ extension KSAVPlayer {
                 return
             }
             // 默认选择第一个声道
-            item.tracks.filter { $0.assetTrack?.mediaType.rawValue == AVMediaType.audio.rawValue }.dropFirst().forEach { $0.isEnabled = false }
+            let audioItemTracks = item.tracks.filter { $0.assetTrack?.mediaType.rawValue == AVMediaType.audio.rawValue }
+            if let wantedIndex = options.wantedAudio(tracks: audioItemTracks.map { AVMediaPlayerTrack(track: $0) }),
+               audioItemTracks.indices.contains(wantedIndex)
+            {
+                audioItemTracks.enumerated().forEach { $0.element.isEnabled = $0.offset == wantedIndex }
+            } else {
+                audioItemTracks.dropFirst().forEach { $0.isEnabled = false }
+            }
             duration = item.duration.seconds
             let estimatedDataRates = item.tracks.compactMap { $0.assetTrack?.estimatedDataRate }
             fileSize = Double(estimatedDataRates.reduce(0, +)) * duration / 8

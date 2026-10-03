@@ -73,9 +73,12 @@ open class KSOptions {
     // audio
     public var audioFilters = [String]()
     public var syncDecodeAudio = false
+    public var preferredAudioLanguages: [String] = []
     // sutile
     public var autoSelectEmbedSubtitle = true
     public var isSeekImageSubtitle = false
+    public var preferredSubtitleLanguages: [String] = []
+    public var subtitlesEnabledByDefault = true
     // video
     public var display = DisplayEnum.plane
     public var videoDelay = 0.0 // s
@@ -230,8 +233,10 @@ open class KSOptions {
     /// wanted audio stream index, or nil for automatic selection
     /// - Parameter :  audio track
     /// - Returns: The index of the track
-    open func wantedAudio(tracks _: [MediaPlayerTrack]) -> Int? {
-        nil
+    open func wantedAudio(tracks: [MediaPlayerTrack]) -> Int? {
+        guard !preferredAudioLanguages.isEmpty else { return nil }
+        let candidates = tracks.map { TrackLanguagePreference.Candidate(languageCode: $0.languageCode) }
+        return TrackLanguagePreference.pickIndex(preferred: preferredAudioLanguages, candidates: candidates)
     }
 
     open func videoFrameMaxCount(fps _: Float, naturalSize _: CGSize, isLive: Bool) -> UInt8 {
