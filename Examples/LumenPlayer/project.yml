@@ -1,0 +1,41 @@
+name: LumenPlayer
+options:
+  deploymentTarget:
+    tvOS: '16.0'
+packages:
+  Lumen:
+    path: ../..
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: '3'
+targets:
+  LumenPlayer:
+    type: application
+    platform: tvOS
+    sources:
+      - Sources
+    dependencies:
+      - package: Lumen
+        product: Lumen
+    info:
+      path: Info.plist
+      properties:
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoadsForMedia: true
+    settings:
+      base:
+        # Signing team and bundle identifier come from build-and-install.sh.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.LumenPlayer
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Lumen
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        ASSETCATALOG_COMPILER_APPICON_NAME: ''
+schemes:
+  LumenPlayer:
+    build:
+      targets:
+        LumenPlayer: all
