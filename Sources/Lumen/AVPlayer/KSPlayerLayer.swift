@@ -171,18 +171,24 @@ open class KSPlayerLayer: NSObject {
         }
     }
 
-    private lazy var timer: Timer = .scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-        guard let self, self.player.isReadyToPlay else {
-            return
+    private var playbackTimer: Timer?
+    private var timer: Timer {
+        if let playbackTimer { return playbackTimer }
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self, self.player.isReadyToPlay else {
+                return
+            }
+            self.delegate?.player(layer: self, currentTime: self.player.currentPlaybackTime, totalTime: self.player.duration)
+            if self.player.playbackState == .playing, self.player.loadState == .playable, self.state == .buffering {
+                // 一个兜底保护，正常不能走到这里
+                self.state = .bufferFinished
+            }
+            if self.player.isPlaying {
+                MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.player.currentPlaybackTime
+            }
         }
-        self.delegate?.player(layer: self, currentTime: self.player.currentPlaybackTime, totalTime: self.player.duration)
-        if self.player.playbackState == .playing, self.player.loadState == .playable, self.state == .buffering {
-            // 一个兜底保护，正常不能走到这里
-            self.state = .bufferFinished
-        }
-        if self.player.isPlaying {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.player.currentPlaybackTime
-        }
+        playbackTimer = timer
+        return timer
     }
 
     private var urls = [URL]()
@@ -239,7 +245,8 @@ open class KSPlayerLayer: NSObject {
     }
 
     deinit {
-        timer.invalidate()
+        // Cleanup must not initialize a timer whose closure captures a deallocating self.
+        playbackTimer?.invalidate()
         if #available(iOS 15.0, tvOS 15.0, macOS 12.0, *) {
             player.pipController?.contentSource = nil
         }

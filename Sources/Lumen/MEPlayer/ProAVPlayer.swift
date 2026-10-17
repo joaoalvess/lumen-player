@@ -3,6 +3,9 @@ import Foundation
 #if os(tvOS) || os(xrOS)
 import DisplayCriteria
 #endif
+#if (os(tvOS) || os(iOS)) && canImport(SpatialAudioPlayback)
+import SpatialAudioPlayback
+#endif
 #if canImport(UIKit)
 import UIKit
 #else
@@ -30,6 +33,18 @@ public final class ProAVPlayer {
     private var delegateProxy: ProAVLaunchDelegateProxy?
     private var pendingSourceSwitch: PendingSourceSwitch?
     private var preferredAudioTrackID: Int32?
+    /// Audio tracks of this source that the library or a launch's probe refused; they keep the FLAC path.
+    private var refusedSpatialAudioTrackIDs = Set<Int32>()
+    /// Whether playback resumes after an in-place restart, for the FLAC fallback or AirPlay, of a launch
+    /// that was already playing.
+    private var fallbackResumesPlayback: Bool?
+    private var playbackTimeObserver: Any?
+    private var externalPlaybackObservation: NSKeyValueObservation?
+    private var externalPlaybackObservationGeneration = 0
+    /// Keep the observed route across item removal, which can clear AVPlayer's active flag.
+    private var externalPlaybackActive = false
+    /// The AtmosOutputActivator while a launch plays APAC on tvOS or iOS; releasing it detaches it.
+    private var atmosOutput: AnyObject?
     private var reportedReady = false
     private var didFail = false
     public weak var delegate: MediaPlayerDelegate?
@@ -47,6 +62,7 @@ public final class ProAVPlayer {
         let url: URL
         let options: KSOptions
         let startOffset: TimeInterval
+        let spatialAudio: ProAVRemuxSession.SpatialAudioPolicy
         let completion: (Bool) -> Void
         var innerSwitchStarted = false
     }
@@ -59,6 +75,47 @@ public final class ProAVPlayer {
         ProAVPlayer.purgeWorkspaces()
         workspaceURL = ProAVPlayer.workspaceRoot.appendingPathComponent(UUID().uuidString)
         innerPlayer.delegate = self
+        // The remux reads only so far ahead of this position.
+        playbackTimeObserver = innerPlayer.player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 1), queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.session?.playbackTime = self.currentPlaybackTime
+            }
+        }
+        observeExternalPlayback()
+    }
+
+    private func observeExternalPlayback() {
+        #if !os(xrOS)
+        let generation = externalPlaybackObservationGeneration
+        externalPlaybackObservation = innerPlayer.player.observe(\.isExternalPlaybackActive) { [weak self] player, _ in
+            let isActive = player.isExternalPlaybackActive
+            Task { @MainActor in
+                guard let self, self.externalPlaybackObservationGeneration == generation else { return }
+                self.externalPlaybackDidChange(isActive: isActive)
+            }
+        }
+        #endif
+    }
+
+    /// Replacing an item must not turn a teardown notification into a route change. The generation
+    /// also drops notifications already queued by the previous observation.
+    private func updateInnerPlayerItem(_ update: () -> Void) {
+        // Capture a real disconnect that may still be queued on the main actor. Once the item is
+        // gone, a false property value can instead be a side effect of our own teardown.
+        if innerPlayer.player.currentItem != nil {
+            externalPlaybackActive = innerPlayer.isExternalPlaybackActive
+        }
+        externalPlaybackObservation?.invalidate()
+        externalPlaybackObservation = nil
+        externalPlaybackObservationGeneration += 1
+        update()
+        // Attachment can activate AirPlay synchronously while observation is suspended. Only an
+        // observed route change may clear the saved state; item removal's false value cannot.
+        if innerPlayer.isExternalPlaybackActive {
+            externalPlaybackActive = true
+        }
+        observeExternalPlayback()
     }
 
     private static var workspaceRoot: URL {
@@ -73,13 +130,18 @@ public final class ProAVPlayer {
         }
     }
 
-    private func makeLaunch(url: URL, options: KSOptions, at time: TimeInterval, audioTrackID: Int32?) -> RemuxLaunch {
+    private func makeLaunch(url: URL, options: KSOptions, at time: TimeInterval, audioTrackID: Int32?, spatialAudio: ProAVRemuxSession.SpatialAudioPolicy) -> RemuxLaunch {
         launchIndex += 1
         let directoryName = "launch\(launchIndex)"
         let directory = workspaceURL.appendingPathComponent(directoryName)
         let configuration = ProAVRemuxSession.Configuration(directory: directory, targetSegmentDuration: ProAVPlayer.segmentDuration, minimumSegmentsBeforeReady: ProAVPlayer.minimumSegmentsBeforeReady)
         let session = ProAVRemuxSession(configuration: configuration)
         session.preferredAudioTrackID = audioTrackID
+        var spatialAudio = spatialAudio
+        // An AirPlay receiver plays the stream itself, so the APAC rendition is left out.
+        spatialAudio.isExternalPlaybackActive = externalPlaybackActive
+        session.spatialAudioPolicy = spatialAudio
+        session.playbackTime = time
         options.startPlayTime = time
         let item = MEPlayerItem(url: url, options: options, remuxSession: session)
         let proxy = ProAVLaunchDelegateProxy(target: self, launch: launchIndex)
@@ -87,8 +149,9 @@ public final class ProAVPlayer {
         return RemuxLaunch(index: launchIndex, directoryName: directoryName, session: session, item: item, proxy: proxy)
     }
 
-    private func startRemux(at time: TimeInterval) {
-        let launch = makeLaunch(url: url, options: options, at: time, audioTrackID: preferredAudioTrackID)
+    private func startRemux(at time: TimeInterval, spatialAudioEnabled: Bool = true) {
+        let spatialAudio = ProAVRemuxSession.SpatialAudioPolicy(refusedTrackIDs: refusedSpatialAudioTrackIDs, isEnabled: spatialAudioEnabled)
+        let launch = makeLaunch(url: url, options: options, at: time, audioTrackID: preferredAudioTrackID, spatialAudio: spatialAudio)
         launch.session.onReady = { [weak self, weak session = launch.session, directoryName = launch.directoryName] _ in
             runOnMainThread {
                 guard let self, let session, self.session === session else { return }
@@ -98,7 +161,7 @@ public final class ProAVPlayer {
         launch.session.onFailure = { [weak self, weak session = launch.session] sessionError in
             runOnMainThread {
                 guard let self, let session, self.session === session else { return }
-                self.fail(error: sessionError)
+                self.sessionDidFail(session, error: sessionError)
             }
         }
         session = launch.session
@@ -111,6 +174,7 @@ public final class ProAVPlayer {
 
     private func remuxDidBecomeReady(directoryName: String) {
         guard !didFail else { return }
+        guard !restartForExternalPlaybackIfNeeded() else { return }
         applyDisplayCriteria()
         if let serverBaseURL {
             attach(baseURL: serverBaseURL, directoryName: directoryName)
@@ -131,10 +195,31 @@ public final class ProAVPlayer {
     }
 
     private func attach(baseURL: URL, directoryName: String) {
-        guard !didFail else { return }
+        guard !didFail, directoryName == "launch\(activeLaunchIndex)" else { return }
+        guard !restartForExternalPlaybackIfNeeded() else { return }
         let masterURL = baseURL.appendingPathComponent(directoryName).appendingPathComponent(ProAVRemuxSession.masterPlaylistName)
-        innerPlayer.replace(url: masterURL, options: options)
-        innerPlayer.prepareToPlay()
+        updateSpatialAudioOutput()
+        updateInnerPlayerItem {
+            innerPlayer.replace(url: masterURL, options: options)
+            innerPlayer.prepareToPlay()
+        }
+        _ = restartForExternalPlaybackIfNeeded()
+    }
+
+    /// Plays the activator while the active launch plays APAC on this device: APAC alone doesn't switch
+    /// a receiver to Dolby Atmos, and AirPods render it flatter without it.
+    private func updateSpatialAudioOutput() {
+        #if (os(tvOS) || os(iOS)) && canImport(SpatialAudioPlayback)
+        guard #available(tvOS 26, iOS 26, *) else { return }
+        guard session?.playsSpatialAudio == true, !externalPlaybackActive else {
+            atmosOutput = nil
+            return
+        }
+        guard atmosOutput == nil else { return }
+        let activator = AtmosOutputActivator()
+        activator.attach(to: innerPlayer.player)
+        atmosOutput = activator
+        #endif
     }
 
     private func applyDisplayCriteria() {
@@ -151,6 +236,63 @@ public final class ProAVPlayer {
         #endif
     }
 
+    private func sessionDidFail(_ session: ProAVRemuxSession, error: NSError) {
+        guard !didFail else { return }
+        guard let failure = session.spatialAudioFailure else {
+            fail(error: error)
+            return
+        }
+        KSLog(level: .info, "\(error.localizedDescription); falling back to FLAC")
+        if case let .refused(trackID) = failure {
+            refusedSpatialAudioTrackIDs.insert(trackID)
+        }
+        restartInPlace(spatialAudioEnabled: false)
+    }
+
+    private func externalPlaybackDidChange(isActive: Bool) {
+        externalPlaybackActive = isActive
+        guard !didFail else { return }
+        // The activator stops as AirPlay starts, ahead of the restart without APAC.
+        updateSpatialAudioOutput()
+        guard isActive else {
+            // Keep the requested source switch. Its readiness callback also rechecks the route if
+            // opening has not selected audio yet.
+            if let pending = pendingSourceSwitch {
+                if pending.launch.session.needsSpatialAudioRestart(isExternalPlaybackActive: false) {
+                    restartPendingSourceSwitch(spatialAudio: pending.spatialAudio)
+                }
+                return
+            }
+            _ = restartForExternalPlaybackIfNeeded()
+            return
+        }
+        if session?.playsSpatialAudio == true {
+            KSLog(level: .info, "AirPlay started; playing the APAC track through FLAC")
+            // Like a seek, the restart abandons a pending switch, which the layer then makes cold,
+            // without APAC while AirPlay lasts.
+            _ = restartForExternalPlaybackIfNeeded()
+        } else if let pending = pendingSourceSwitch, pending.launch.session.needsSpatialAudioRestart(isExternalPlaybackActive: true) {
+            restartPendingSourceSwitch(spatialAudio: pending.spatialAudio)
+        }
+    }
+
+    @discardableResult
+    private func restartForExternalPlaybackIfNeeded() -> Bool {
+        guard let session, session.needsSpatialAudioRestart(isExternalPlaybackActive: externalPlaybackActive) else { return false }
+        restartInPlace(spatialAudioEnabled: session.spatialAudioPolicy.isEnabled)
+        return true
+    }
+
+    /// Restarts the active launch at the current position, keeping the play or pause state.
+    private func restartInPlace(spatialAudioEnabled: Bool) {
+        let seekCompletion = pendingSeekCompletion
+        pendingSeekCompletion = nil
+        // The remux runs ahead of playback, so this can happen while the launch plays.
+        let resumesPlayback = isReadyToPlay && seekCompletion == nil ? isPlaying : nil
+        restart(at: currentPlaybackTime, completion: seekCompletion, spatialAudioEnabled: spatialAudioEnabled)
+        fallbackResumesPlayback = resumesPlayback
+    }
+
     private func fail(error: NSError) {
         abortPendingSourceSwitch()
         guard !didFail else { return }
@@ -159,7 +301,8 @@ public final class ProAVPlayer {
         pendingSeekCompletion = nil
         seekCompletion?(false)
         remuxItem?.delegate = nil
-        innerPlayer.shutdown()
+        atmosOutput = nil
+        updateInnerPlayerItem { innerPlayer.shutdown() }
         remuxItem?.shutdown()
         session?.requestCleanup()
         server.stop()
@@ -167,24 +310,85 @@ public final class ProAVPlayer {
         delegate?.finish(player: self, error: error)
     }
 
-    private func restart(at time: TimeInterval, completion: ((Bool) -> Void)?) {
+    private func restart(at time: TimeInterval, completion: ((Bool) -> Void)?, spatialAudioEnabled: Bool = true) {
         abortPendingSourceSwitch()
+        // Keep the tracks the launch's probe refused.
+        if let session {
+            refusedSpatialAudioTrackIDs.formUnion(session.spatialAudioPolicy.refusedTrackIDs)
+        }
         let previousCompletion = pendingSeekCompletion
         pendingSeekCompletion = nil
         previousCompletion?(false)
         pendingSeekCompletion = completion
+        fallbackResumesPlayback = nil
         didFail = false
         remuxItem?.delegate = nil
-        innerPlayer.shutdown()
+        atmosOutput = nil
+        updateInnerPlayerItem { innerPlayer.shutdown() }
         remuxItem?.shutdown()
         session?.requestCleanup()
-        startRemux(at: time)
+        startRemux(at: time, spatialAudioEnabled: spatialAudioEnabled)
+    }
+
+    private func startSourceSwitch(url: URL, options: KSOptions, spatialAudio: ProAVRemuxSession.SpatialAudioPolicy, completion: @escaping (Bool) -> Void) {
+        let time = currentPlaybackTime
+        let launch = makeLaunch(url: url, options: options, at: time, audioTrackID: nil, spatialAudio: spatialAudio)
+        pendingSourceSwitch = PendingSourceSwitch(launch: launch, url: url, options: options, startOffset: time, spatialAudio: spatialAudio, completion: completion)
+        launch.session.onReady = { [weak self, weak session = launch.session] _ in
+            runOnMainThread {
+                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
+                self.pendingSourceSwitchDidBecomeReady()
+            }
+        }
+        // One handler serves the candidate while it is pending and once it is committed, so a failure
+        // that arrives during the commit still reaches the active session.
+        launch.session.onFailure = { [weak self, weak session = launch.session] sessionError in
+            runOnMainThread {
+                guard let self, let session else { return }
+                if self.pendingSourceSwitch?.launch.session === session {
+                    self.pendingSourceSwitchDidFail(session)
+                } else if self.session === session {
+                    self.sessionDidFail(session, error: sessionError)
+                }
+            }
+        }
+        launch.item.prepareToPlay()
+    }
+
+    /// Retries a candidate whose APAC conversion failed on the FLAC path, as a cold launch would.
+    private func pendingSourceSwitchDidFail(_ session: ProAVRemuxSession) {
+        guard let pending = pendingSourceSwitch, let failure = session.spatialAudioFailure else {
+            abortPendingSourceSwitch(restoreSpatialAudio: true)
+            return
+        }
+        var spatialAudio = pending.spatialAudio
+        spatialAudio.isEnabled = false
+        if case let .refused(trackID) = failure {
+            spatialAudio.refusedTrackIDs.insert(trackID)
+        }
+        restartPendingSourceSwitch(spatialAudio: spatialAudio)
+    }
+
+    private func restartPendingSourceSwitch(spatialAudio: ProAVRemuxSession.SpatialAudioPolicy) {
+        guard let pending = pendingSourceSwitch else { return }
+        pendingSourceSwitch = nil
+        if pending.innerSwitchStarted {
+            innerPlayer.abandonPendingSourceSwitch()
+        }
+        pending.launch.item.delegate = nil
+        pending.launch.item.shutdown()
+        pending.launch.session.requestCleanup()
+        startSourceSwitch(url: pending.url, options: pending.options, spatialAudio: spatialAudio, completion: pending.completion)
     }
 
     private func pendingSourceSwitchDidBecomeReady() {
         guard let pending = pendingSourceSwitch else { return }
+        if pending.launch.session.needsSpatialAudioRestart(isExternalPlaybackActive: externalPlaybackActive) {
+            restartPendingSourceSwitch(spatialAudio: pending.spatialAudio)
+            return
+        }
         guard let serverBaseURL else {
-            abortPendingSourceSwitch()
+            abortPendingSourceSwitch(restoreSpatialAudio: true)
             return
         }
         let masterURL = serverBaseURL.appendingPathComponent(pending.launch.directoryName).appendingPathComponent(ProAVRemuxSession.masterPlaylistName)
@@ -195,7 +399,7 @@ public final class ProAVPlayer {
                 if success {
                     self.commitPendingSourceSwitch()
                 } else {
-                    self.abortPendingSourceSwitch()
+                    self.abortPendingSourceSwitch(restoreSpatialAudio: true)
                 }
             }
         }
@@ -211,27 +415,23 @@ public final class ProAVPlayer {
         url = pending.url
         options = pending.options
         preferredAudioTrackID = nil
+        refusedSpatialAudioTrackIDs = pending.launch.session.spatialAudioPolicy.refusedTrackIDs
         session = pending.launch.session
         remuxItem = pending.launch.item
         delegateProxy = pending.launch.proxy
         activeLaunchIndex = pending.launch.index
         startOffset = pending.startOffset
         pending.launch.session.onReady = nil
-        pending.launch.session.onFailure = { [weak self, weak session = pending.launch.session] sessionError in
-            runOnMainThread {
-                guard let self, let session, self.session === session else { return }
-                self.fail(error: sessionError)
-            }
-        }
         previousItem?.shutdown()
         previousSession?.requestCleanup()
         if session?.videoSignaling?.preferredDynamicRange != previousDynamicRange {
             applyDisplayCriteria()
         }
+        updateSpatialAudioOutput()
         pending.completion(true)
     }
 
-    private func abortPendingSourceSwitch() {
+    private func abortPendingSourceSwitch(restoreSpatialAudio: Bool = false) {
         guard let pending = pendingSourceSwitch else { return }
         pendingSourceSwitch = nil
         if pending.innerSwitchStarted {
@@ -241,11 +441,15 @@ public final class ProAVPlayer {
         pending.launch.item.shutdown()
         pending.launch.session.requestCleanup()
         pending.completion(false)
+        // AirPlay may have ended while this candidate was pending, deferring the active restart.
+        if restoreSpatialAudio, pendingSourceSwitch == nil, !externalPlaybackActive {
+            _ = restartForExternalPlaybackIfNeeded()
+        }
     }
 
     fileprivate func launchDidFail(index: Int, error: NSError?) {
         if let pending = pendingSourceSwitch, pending.launch.index == index {
-            abortPendingSourceSwitch()
+            abortPendingSourceSwitch(restoreSpatialAudio: true)
             return
         }
         guard index == activeLaunchIndex else { return }
@@ -308,6 +512,8 @@ extension ProAVPlayer: MediaPlayerProtocol {
     public var pipController: KSPictureInPictureController? { innerPlayer.pipController }
 
     public func prepareToPlay() {
+        // A fresh play must not inherit the route from a previous, terminal shutdown.
+        externalPlaybackActive = innerPlayer.isExternalPlaybackActive
         didFail = false
         startRemux(at: options.startPlayTime)
     }
@@ -317,15 +523,22 @@ extension ProAVPlayer: MediaPlayerProtocol {
         didFail = false
         reportedReady = false
         preferredAudioTrackID = nil
+        refusedSpatialAudioTrackIDs = []
         self.url = url
         self.options = options
     }
 
     public func play() {
+        if fallbackResumesPlayback != nil {
+            fallbackResumesPlayback = true
+        }
         innerPlayer.play()
     }
 
     public func pause() {
+        if fallbackResumesPlayback != nil {
+            fallbackResumesPlayback = false
+        }
         innerPlayer.pause()
     }
 
@@ -335,26 +548,11 @@ extension ProAVPlayer: MediaPlayerProtocol {
             completion(false)
             return
         }
-        let time = currentPlaybackTime
-        let launch = makeLaunch(url: url, options: options, at: time, audioTrackID: nil)
-        pendingSourceSwitch = PendingSourceSwitch(launch: launch, url: url, options: options, startOffset: time, completion: completion)
-        launch.session.onReady = { [weak self, weak session = launch.session] _ in
-            runOnMainThread {
-                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
-                self.pendingSourceSwitchDidBecomeReady()
-            }
-        }
-        launch.session.onFailure = { [weak self, weak session = launch.session] _ in
-            runOnMainThread {
-                guard let self, let session, self.pendingSourceSwitch?.launch.session === session else { return }
-                self.abortPendingSourceSwitch()
-            }
-        }
-        launch.item.prepareToPlay()
+        startSourceSwitch(url: url, options: options, spatialAudio: ProAVRemuxSession.SpatialAudioPolicy(), completion: completion)
     }
 
     public func cancelSourceSwitch() {
-        abortPendingSourceSwitch()
+        abortPendingSourceSwitch(restoreSpatialAudio: true)
     }
 
     public func shutdown() {
@@ -363,13 +561,15 @@ extension ProAVPlayer: MediaPlayerProtocol {
         pendingSeekCompletion = nil
         seekCompletion?(false)
         remuxItem?.delegate = nil
-        innerPlayer.shutdown()
+        atmosOutput = nil
+        updateInnerPlayerItem { innerPlayer.shutdown() }
         remuxItem?.shutdown()
         session?.requestCleanup()
         remuxItem = nil
         session = nil
         server.stop()
         serverBaseURL = nil
+        externalPlaybackActive = false
     }
 
     public func seek(time: TimeInterval, completion: @escaping ((Bool) -> Void)) {
@@ -410,7 +610,14 @@ extension ProAVPlayer: MediaPlayerDelegate {
         pendingSeekCompletion = nil
         if reportedReady {
             seekCompletion?(true)
-            if options.isSeekedAutoPlay {
+            if let resumesPlayback = fallbackResumesPlayback {
+                fallbackResumesPlayback = nil
+                if resumesPlayback {
+                    play()
+                } else {
+                    pause()
+                }
+            } else if options.isSeekedAutoPlay {
                 play()
             }
         } else {

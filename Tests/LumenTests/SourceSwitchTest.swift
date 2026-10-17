@@ -152,6 +152,20 @@ class SourceSwitchTest: XCTestCase {
     }
 
     @MainActor
+    func testLayerCanBeReleasedBeforePlaybackStarts() throws {
+        KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
+        let url = try XCTUnwrap(URL(string: "https://example.com/a.m3u8"))
+        let options = KSOptions()
+        options.registerRemoteControll = false
+        weak var releasedLayer: KSPlayerLayer?
+        do {
+            let layer = KSPlayerLayer(url: url, isAutoPlay: false, options: options)
+            releasedLayer = layer
+        }
+        XCTAssertNil(releasedLayer)
+    }
+
+    @MainActor
     func testDefaultSwitchSourceFallsBackToColdPath() throws {
         KSOptions.firstPlayerType = ColdOnlyFakeEngine.self
         let urlA = try XCTUnwrap(URL(string: "https://example.com/a.m3u8"))

@@ -25,7 +25,8 @@ It ships with a complete SwiftUI interface designed for the Siri Remote, a netwo
 - Native **Dolby Vision** on the `ProAVPlayer` path — the remux signals `dvh1`/`hvc1` and carries the `dvcC`/`dvvC` configuration box through, so the TV switches into real DV. The FFmpeg engine reports Dolby Vision to the system as HDR10
 - **Profile 7 is converted to 8.1** on the way through the remux: the enhancement-layer NAL units are dropped and the RPU is rewritten single-layer with libdovi. Without that conversion the remux engine refuses profile 7 outright and playback falls back to the FFmpeg engine. Implemented and unit-tested; not yet checked against a real Dolby Vision display
 - E-AC-3, AC-3, AAC, FLAC and ALAC are **bitstream-copied** into the remux, untouched. For Atmos the `moov` is held back until the muxer has parsed an audio frame — which is what lets it write the JOC fields of the `dec3` box — and the playlist declares `CHANNELS="16/JOC"` when the decoder reports the DD+ Atmos profile. Same caveat: the code path is there, the receiver check isn't done
-- TrueHD and DTS are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone
+- **TrueHD Atmos and DTS:X play as APAC** on tvOS, iOS and macOS 26 and later: [SpatialAudioBridge](https://github.com/kristofferR/SpatialAudioBridge) renders the objects to 7.1.4, the remux serves them as a separate audio rendition, and on tvOS and iOS a silent Dolby Digital Plus Atmos stream plays alongside, which switches a receiver to Atmos. A receiver showed Atmos through Lumen on Apple TV, and AirPods Pro on an iPhone played it as spatial audio with head tracking
+- Other TrueHD and DTS tracks, and any the library rejects, are re-encoded to FLAC at up to 24-bit: lossless for the channel bed at that depth, but the Atmos objects are gone
 - MKV, HLS, MP4 and anything else FFmpeg 8.1 demuxes
 - The `AVPlayer`-backed engines decode in hardware. In the FFmpeg engine, VideoToolbox is opt-in (`asynchronousDecompression`) and falls back to software automatically when a frame fails to decode
 - On tvOS, frame rate and dynamic range are handed to the display through `AVDisplayCriteria` — so the TV can switch mode to match the content, when the viewer has Match Content enabled
@@ -80,7 +81,8 @@ There are two floors, and they are not the same one:
 
 Scrub thumbnails are tvOS-only, at any version.
 
-- Swift 5.9+ / Xcode 15+
+- Xcode 26 or later: SpatialAudioBridge, which converts TrueHD Atmos and DTS:X, needs Swift 6 tools and the tvOS, iOS and macOS 26 SDKs to build. Lumen itself still compiles in the Swift 5 language mode
+- SpatialAudioBridge's core is universal for macOS and the iOS simulator; generic Apple TV simulator builds need `ARCHS=arm64`. Mac Catalyst builds leave it out and keep the FLAC path
 
 ## Installation
 
@@ -190,3 +192,5 @@ Lumen grew out of [**KSPlayer**](https://github.com/kingslay/KSPlayer) by [kings
 ## License
 
 GPL-3.0 — see [`LICENSE`](./LICENSE).
+
+Apps that ship Lumen show `SpatialAudioBridgeNotices.text`, the license notices of SpatialAudioBridge's core, in their acknowledgements.

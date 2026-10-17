@@ -17,11 +17,37 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     static let masterPlaylistName = "master.m3u8"
     static let mediaPlaylistName = "media.m3u8"
     static let initSegmentName = "init.mp4"
+    static let audioPlaylistName = "audio.m3u8"
+    static let audioInitSegmentName = "audio-init.mp4"
+
+    /// Which audio tracks of a launch try the APAC conversion before FLAC.
+    struct SpatialAudioPolicy: Equatable {
+        /// Tracks the library refused, which keep the FLAC path for their source.
+        var refusedTrackIDs = Set<Int32>()
+        /// Off for a launch that retries on FLAC after the conversion failed without refusing the track.
+        var isEnabled = true
+        var isExternalPlaybackActive = false
+
+        func allows(trackID: Int32) -> Bool {
+            isEnabled && !isExternalPlaybackActive && !refusedTrackIDs.contains(trackID)
+        }
+    }
+
+    enum SpatialAudioFailure: Equatable {
+        /// The library refused the track, as it does for TrueHD without Atmos or DTS-HD MA without DTS:X.
+        case refused(trackID: Int32)
+        /// The conversion failed for this launch only.
+        case failed
+    }
 
     let configuration: Configuration
     private let lock = NSLock()
     private var pendingEvents = [() -> Void]()
     private var _preferredAudioTrackID: Int32?
+    private var _spatialAudioPolicy = SpatialAudioPolicy()
+    private var _spatialAudioFailure: SpatialAudioFailure?
+    private var _spatialAudioWithheld = false
+    private var _playbackTime: TimeInterval?
     private var _onReady: ((URL) -> Void)?
     private var _onFailure: ((NSError) -> Void)?
     private var _videoSignaling: ProAVVideoSignaling?
@@ -33,9 +59,12 @@ public final class ProAVRemuxSession: @unchecked Sendable {
     private var initScanner = ProAVInitBoundaryScanner()
     private var initBoundaryFound = false
     private var segments = [ProAVSegment]()
+    private var audioSegments = [ProAVSegment]()
     private var segmentIndex = 0
     private var segmentStart: Double?
     private var lastVideoSeconds: Double?
+    private var lastAudioSeconds: Double?
+    private var audioEndSeconds: Double?
     private var currentSegmentBytes = Int64(0)
     private var readyFired = false
     private var finished = false
@@ -61,6 +90,71 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         }
         set {
             withLock { _preferredAudioTrackID = newValue }
+        }
+    }
+
+    var spatialAudioPolicy: SpatialAudioPolicy {
+        get {
+            withLock { _spatialAudioPolicy }
+        }
+        set {
+            withLock { _spatialAudioPolicy = newValue }
+        }
+    }
+
+    /// Whether the audio plays as the separate APAC rendition.
+    var playsSpatialAudio: Bool {
+        withLock { audioSignaling?.mediaPlaylistName != nil }
+    }
+
+    /// Set when the session failed because the APAC conversion did; the FLAC path can still play the track.
+    var spatialAudioFailure: SpatialAudioFailure? {
+        withLock { _spatialAudioFailure }
+    }
+
+    /// Whether this launch left APAC out for an eligible track that its source has not refused, as during
+    /// AirPlay, so a later launch can bring it back.
+    var spatialAudioWithheld: Bool {
+        get {
+            withLock { _spatialAudioWithheld }
+        }
+        set {
+            withLock { _spatialAudioWithheld = newValue }
+        }
+    }
+
+    /// Recheck after opening as well as on route changes: the route can change before audio is selected.
+    func needsSpatialAudioRestart(isExternalPlaybackActive: Bool) -> Bool {
+        withLock {
+            isExternalPlaybackActive ? audioSignaling?.mediaPlaylistName != nil : _spatialAudioWithheld
+        }
+    }
+
+    /// The player's position from the start of the file, which the remux reads ahead of.
+    var playbackTime: TimeInterval? {
+        get {
+            withLock { _playbackTime }
+        }
+        set {
+            withLock { _playbackTime = newValue }
+        }
+    }
+
+    /// Pace the least advanced required stream so pausing the only reader cannot starve audio.
+    /// Source timestamps start at `sourceStart`; playback counts from the start of the file.
+    func remuxedAhead(sourceStart: TimeInterval) -> TimeInterval? {
+        withLock {
+            guard readyFired, let lastVideoSeconds, let _playbackTime else { return nil }
+            if audioSignaling != nil {
+                guard let lastAudioSeconds else { return nil }
+                // Once all declared audio is read, its shorter duration must not make the video
+                // tail read without a bound. Unknown ends still wait for audio to avoid starvation.
+                if let audioEndSeconds, lastAudioSeconds >= audioEndSeconds - 0.000001 {
+                    return lastVideoSeconds - sourceStart - _playbackTime
+                }
+                return min(lastVideoSeconds, lastAudioSeconds) - sourceStart - _playbackTime
+            }
+            return lastVideoSeconds - sourceStart - _playbackTime
         }
     }
 
@@ -149,6 +243,14 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         }
     }
 
+    func trackAudioTime(seconds: Double, duration: Double = 0, streamEnd: Double? = nil) {
+        withLock {
+            let end = seconds + max(duration, 0)
+            lastAudioSeconds = max(lastAudioSeconds ?? end, end)
+            audioEndSeconds = streamEnd
+        }
+    }
+
     func closeSegment(nextStartTime: Double) {
         withLock {
             guard let start = segmentStart else {
@@ -159,7 +261,7 @@ public final class ProAVRemuxSession: @unchecked Sendable {
             segmentStart = nextStartTime
             currentHandle = openFileLocked(named: segmentFileName(index: segmentIndex))
             currentSegmentBytes = 0
-            writeMediaPlaylistLocked(ended: false)
+            writePlaylistsLocked(ended: false)
             fireReadyIfNeededLocked(force: false)
         }
     }
@@ -181,8 +283,12 @@ public final class ProAVRemuxSession: @unchecked Sendable {
             if reachedEnd, !failed {
                 if segments.isEmpty {
                     failLocked(NSError(description: "ProAV remux produced no segments"))
+                } else if audioSignaling?.mediaPlaylistName != nil, audioSegments.isEmpty {
+                    // The session could never become ready; the FLAC transcode can still play the track.
+                    _spatialAudioFailure = .failed
+                    failLocked(NSError(description: "ProAV spatial audio produced no fragments"))
                 } else {
-                    writeMediaPlaylistLocked(ended: true)
+                    writePlaylistsLocked(ended: true)
                     fireReadyIfNeededLocked(force: true)
                 }
             }
@@ -196,6 +302,33 @@ public final class ProAVRemuxSession: @unchecked Sendable {
 
     func fail(_ error: NSError) {
         withLock { failLocked(error) }
+    }
+
+    func failSpatialAudio(_ error: NSError, failure: SpatialAudioFailure) {
+        withLock {
+            guard !failed else { return }
+            _spatialAudioFailure = failure
+            failLocked(error)
+        }
+    }
+
+    func writeAudioInitSegment(_ data: Data) {
+        withLock {
+            guard !finished, !failed else { return }
+            writeLocked(data: data, named: Self.audioInitSegmentName)
+        }
+    }
+
+    func appendAudioSegment(_ data: Data, duration: Double) {
+        withLock {
+            guard !finished, !failed else { return }
+            let fileName = "audio\(audioSegments.count).m4s"
+            writeLocked(data: data, named: fileName)
+            guard !failed else { return }
+            audioSegments.append(ProAVSegment(fileName: fileName, duration: duration))
+            writePlaylistsLocked(ended: false)
+            fireReadyIfNeededLocked(force: false)
+        }
     }
 
     func requestCleanup() {
@@ -252,14 +385,22 @@ public final class ProAVRemuxSession: @unchecked Sendable {
         segmentIndex += 1
     }
 
-    private func writeMediaPlaylistLocked(ended: Bool) {
-        let media = ProAVPlaylist.media(targetDuration: configuration.targetSegmentDuration, initSegmentName: Self.initSegmentName, segments: segments, ended: ended)
+    /// Writes the video playlist and the separate audio rendition's, which HLS requires to share one
+    /// target duration, so a longer segment in either raises both.
+    private func writePlaylistsLocked(ended: Bool) {
+        let targetDuration = max(configuration.targetSegmentDuration, (segments + audioSegments).map(\.duration).max() ?? 0)
+        let media = ProAVPlaylist.media(targetDuration: targetDuration, initSegmentName: Self.initSegmentName, segments: segments, ended: ended)
         writeLocked(text: media, to: mediaURL)
+        guard audioSignaling?.mediaPlaylistName != nil else { return }
+        let audio = ProAVPlaylist.media(targetDuration: targetDuration, initSegmentName: Self.audioInitSegmentName, segments: audioSegments, ended: ended)
+        writeLocked(text: audio, to: configuration.directory.appendingPathComponent(Self.audioPlaylistName))
     }
 
     private func fireReadyIfNeededLocked(force: Bool) {
         guard !readyFired, !failed, !segments.isEmpty else { return }
         guard force || segments.count >= configuration.minimumSegmentsBeforeReady else { return }
+        // A separate audio rendition needs a fragment too before the player can start.
+        guard audioSignaling?.mediaPlaylistName == nil || !audioSegments.isEmpty else { return }
         readyFired = true
         if let handler = _onReady {
             let url = masterURL
@@ -280,6 +421,14 @@ public final class ProAVRemuxSession: @unchecked Sendable {
             try Data(text.utf8).write(to: url, options: .atomic)
         } catch {
             failLocked(NSError(description: "ProAV playlist write failed: \(error.localizedDescription)"))
+        }
+    }
+
+    private func writeLocked(data: Data, named name: String) {
+        do {
+            try data.write(to: configuration.directory.appendingPathComponent(name))
+        } catch {
+            failLocked(NSError(description: "ProAV segment write failed: \(name)"))
         }
     }
 

@@ -127,6 +127,7 @@ struct ProAVVideoSignaling {
 struct ProAVAudioSignaling: Equatable {
     let codecsAttribute: String
     let channels: String?
+    var mediaPlaylistName: String? = nil
 }
 
 enum ProAVAudioStrategy {
@@ -202,6 +203,9 @@ enum ProAVPlaylist {
             var mediaAttributes = ["TYPE=AUDIO", "GROUP-ID=\"main\"", "NAME=\"Original\"", "DEFAULT=YES", "AUTOSELECT=YES"]
             if let channels = audio.channels {
                 mediaAttributes.append("CHANNELS=\"\(channels)\"")
+            }
+            if let mediaPlaylistName = audio.mediaPlaylistName {
+                mediaAttributes.append("URI=\"\(mediaPlaylistName)\"")
             }
             lines.append("#EXT-X-MEDIA:" + mediaAttributes.joined(separator: ","))
         }
